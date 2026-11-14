@@ -173,6 +173,8 @@ export function damagePlayer(dmg, part) {
   if (!player.alive) return false;
   const amount = part === 'head' ? dmg : (player.kevlar ? dmg * 0.5 : dmg);
   player.health -= amount;
+  // Any damage interrupts an in-progress plant/defuse (rounds.js rebuilds progress).
+  state.round.bomb.progress = 0;
   if (player.health > 0) return false;
   player.health = 0;
   player.alive = false;

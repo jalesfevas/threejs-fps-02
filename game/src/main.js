@@ -14,6 +14,7 @@ import { createWeapons } from './weapons.js';
 import { createGrenades } from './grenade.js';
 import { initBots, spawnBots, updateBots, damageBot, botCenter, respawnBots } from './bots.js';
 import { initRounds, updateRounds } from './rounds.js';
+import { initBombs, updateBombs } from './bombs.js';
 import { initEconomy, createBuyMenu, canOpen, award } from './economy.js';
 import { createHud } from './hud.js';
 
@@ -51,6 +52,7 @@ const world = createWorld(scene);
 // Bots must exist before weapons.js snapshots the shootable list (bots push their
 // torso/head meshes into world.shootables at spawn time).
 initBots(scene, world, (origin, dir, spread, recordIndex) => weapons.botShot(origin, dir, spread, recordIndex));
+initBombs(scene);
 spawnBots(scene);
 const hud = createHud();
 const player = createPlayer(world.colliders, world.shootables);
@@ -195,6 +197,7 @@ function step(dt) {
   weapons.step(dt);
   grenades.step(dt);
   updateBots(dt);
+  updateBombs();
   state.fx.shake = Math.max(0, state.fx.shake - dt * 1.8);
 }
 

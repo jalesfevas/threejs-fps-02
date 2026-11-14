@@ -39,6 +39,7 @@ export function spend(item, weapons) {
     state.grenades.count = Math.min(3, state.grenades.count + 1);
   } else if (item.kind === 'kevlar') {
     state.player.kevlar = true;
+    state.economy.kevlarRound = state.round.number; // rounds.js keeps it only this round
   }
   return true;
 }

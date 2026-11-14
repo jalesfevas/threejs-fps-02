@@ -126,12 +126,14 @@ export function spawnBots(scene) {
     const bot = {
       name: `${team === TEAM.PLAYER ? 'Friendly' : 'Enemy'} ${index + 1}`,
       team, index, body,
+      slot: state.bots.length, // position in state.bots; bomb.carrier uses this
       health: HEALTH, alive: true, fall: 0,
       position: new THREE.Vector3(), yaw: 0,
       patrol: PATROLS[team][index % PATROLS[team].length],
       patrolAt: 0, node: -1, goal: -1,
       mode: 'patrol', holdNode: -1, holdScan: 0,
       target: null, lastSeen: new THREE.Vector3(), lastSeenAt: -99, burst: 0, fireAt: 0, aimError: 0.09,
+      seesEnemy: false, goalX: 0, goalZ: 0, goalRange: 0,
     };
     for (const mesh of [body.torso, body.head]) {
       mesh.userData.part = mesh === body.head ? 'head' : 'body';
@@ -246,6 +248,7 @@ export function updateBots(dt) {
   for (const bot of state.bots) {
     if (!bot.alive) continue; // death fall is handled in stepBodies below
     const seen = acquireTarget(bot);
+    bot.seesEnemy = Boolean(seen);
     if (seen) {
       bot.target = seen;
       bot.mode = 'engage';
@@ -261,9 +264,20 @@ export function updateBots(dt) {
         bot.mode = 'patrol';
       }
     }
+    // Bomb objective: overrides patrol/hold/seek but never an enemy in sight.
+    const objective = objectiveFor(bot);
+    if (objective && bot.mode !== 'engage') {
+      bot.mode = 'objective';
+      bot.goalX = objective.x;
+      bot.goalZ = objective.z;
+      bot.goalRange = objective.range;
+    } else if (!objective && bot.mode === 'objective') {
+      bot.mode = 'patrol';
+    }
     if (bot.mode === 'patrol') patrolStep(bot, dt);
     else if (bot.mode === 'hold') holdStep(bot, dt);
     else if (bot.mode === 'seek') seekStep(bot, dt);
+    else if (bot.mode === 'objective') objectiveStep(bot, dt);
     else engageStep(bot, seen, dt);
   }
   stepBodies(dt);
@@ -316,6 +330,51 @@ export function hearGunshot(x, z) {
   }
 }
 
+// --- Bomb objective steering ----------------------------------------------------------------
+// The bot carrier walks to the nearer site; defenders converge on a planted bomb; attackers
+// converge on a dropped bomb. Enemies in sight (engage mode) always override these.
+function objectiveFor(bot) {
+  const bomb = state.round.bomb;
+  if (bomb.state === 'planted' && bot.team === 1) {
+    return { x: bomb.x, z: bomb.z, range: 2.5 };
+  }
+  if (bomb.state === 'dropped' && bot.team === 0) {
+    return { x: bomb.x, z: bomb.z, range: 1.0 };
+  }
+  if (bomb.state === 'carried' && bomb.carrier === bot.slot) {
+    const a = worldRef.sites.A.center;
+    const b = worldRef.sites.B.center;
+    const da = Math.hypot(a.x - bot.position.x, a.z - bot.position.z);
+    const db = Math.hypot(b.x - bot.position.x, b.z - bot.position.z);
+    const site = da <= db ? a : b;
+    return { x: site.x, z: site.z, range: 2.0 };
+  }
+  return null;
+}
+
+// Walk the goal: direct when the line is clear, otherwise hop through the route graph
+// (nearest node → next hop toward the node nearest the goal).
+function objectiveStep(bot, dt) {
+  const dx = bot.goalX - bot.position.x, dz = bot.goalZ - bot.position.z;
+  const dist = Math.hypot(dx, dz);
+  faceToward(bot, bot.goalX, bot.goalZ, dt);
+  if (dist <= bot.goalRange) return; // in position; rounds.js runs the hold timer
+  temps.b.set(bot.position.x, 1.5, bot.position.z);
+  temps.c.set(bot.goalX, 0.5, bot.goalZ);
+  if (!occluded(temps.b, temps.c)) {
+    botMove(bot, (dx / dist) * SPEED * dt, (dz / dist) * SPEED * dt);
+    return;
+  }
+  const hop = NEXT_HOP[nearestNode(bot.position.x, bot.position.z)][nearestNode(bot.goalX, bot.goalZ)];
+  if (hop === -1) {
+    botMove(bot, (dx / dist) * SPEED * dt, (dz / dist) * SPEED * dt);
+    return;
+  }
+  const hx = NODES[hop].x - bot.position.x, hz = NODES[hop].z - bot.position.z;
+  const hd = Math.hypot(hx, hz) || 1;
+  botMove(bot, (hx / hd) * SPEED * dt, (hz / hd) * SPEED * dt);
+}
+
 function patrolStep(bot, dt) {
   const goal = bot.patrol[bot.patrolAt];
   const tx = NODES[goal].x, tz = NODES[goal].z;
@@ -353,6 +412,8 @@ export function damageBot(bot, dmg, part, byPlayer) {
   if (!bot || !bot.alive) return false;
   const amount = dmg; // weapons.js already sends the per-part value (damageHead vs damageBody)
   bot.health -= amount;
+  // Any damage interrupts an in-progress plant/defuse (rounds.js rebuilds progress).
+  state.round.bomb.progress = 0;
   if (byPlayer) {
     state.stats.hits += 1;
     if (part === 'head') state.stats.headshots += 1;
@@ -379,6 +440,8 @@ export function respawnBots() {
     bot.lastSeenAt = -99;
     bot.fireAt = 0;
     bot.burst = 0;
+    bot.seesEnemy = false;
+    bot.goalRange = 0;
     if (!spawns) continue;
     const list = bot.team === TEAM.PLAYER ? spawns.attackers : spawns.defenders;
     bot.position.copy(list[(bot.index + (bot.team === TEAM.PLAYER ? 1 : 0)) % list.length].position);

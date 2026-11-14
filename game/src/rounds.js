@@ -2,6 +2,7 @@
 // ROUND_END (4 s banner) → next round, until one side reaches 5 wins → MATCH_END + restart.
 // The objective (plant/defuse) lives here too; the economy is economy.js.
 import { state } from './state.js';
+import { WEAPONS } from './weapons.js';
 
 const ROUND_TIME = 60;
 const FREEZE_TIME = 5;
@@ -9,6 +10,7 @@ const BOMB_TIME = 25;
 const PLANT_TIME = 3;
 const DEFUSE_TIME = 7;
 const DEFUSE_RANGE = 4;
+const PICKUP_RANGE = 1.5;
 const ROUND_END_TIME = 4;
 const WIN_SCORE = 5;
 
@@ -19,9 +21,11 @@ export function initRounds(deps) {
   state.round.number = 0;
   state.round.score = [0, 0]; // [attackers(player team), defenders]
   state.round.banner = '';
+  state.round.lastWinner = null; // set by endRound, read by the next startRound
+  state.round.playerSurvived = true;
   state.round.bomb = {
-    carrier: 'player', // who carries it: 'player' or a bot index
-    state: 'carried', // carried | planted | exploded | defused
+    carrier: 'player', // who carries it: 'player', a bot index, or null while dropped
+    state: 'carried', // carried | dropped | planted | exploded | defused
     site: null,
     x: 0, y: 0, z: 0,
     timer: 0,
@@ -41,6 +45,20 @@ function startRound() {
   const spawns = deps_.world.spawns;
   deps_.respawnPlayer(spawns.attackers[0].position);
   deps_.respawnBots();
+  // Loadout carry-over: kevlar cleared unless bought this round; ammo refilled to full
+  // magazines; a loser who died is reset to the pistol and loses their grenades.
+  if (state.economy?.kevlarRound !== state.round.number) state.player.kevlar = false;
+  const resetToPistol = state.round.lastWinner === 1 && !state.round.playerSurvived;
+  for (let i = 0; i < WEAPONS.length; i += 1) {
+    const slot = state.weapon.slots[i];
+    if (resetToPistol && i < 2) { slot.mag = 0; slot.reserve = 0; continue; }
+    slot.mag = WEAPONS[i].mag;
+    slot.reserve = WEAPONS[i].reserve;
+  }
+  if (!state.round.playerSurvived) state.grenades.count = 0;
+  if (resetToPistol) {
+    state.weapon.slot = 2;
+  }
   state.round.bomb.state = 'carried';
   state.round.bomb.carrier = 'player';
   state.round.bomb.site = null;
@@ -95,9 +113,52 @@ function goLive() {
 // Dispatch per phase; only runs in live/planted (guarded by updateRounds).
 function updateObjective(dt) {
   const bomb = state.round.bomb;
-  if (bomb.state === 'carried') updatePlant(dt);
-  else if (bomb.state === 'planted') updateDefuse(dt);
-  else deps_.hud.setProgress(-1, '');
+  if (bomb.state === 'carried') {
+    // A dead carrier drops the bomb where they fell.
+    const carrier = carrierBot();
+    const dead = bomb.carrier === 'player' ? !state.player.alive : !(carrier && carrier.alive);
+    if (dead) {
+      const pos = bomb.carrier === 'player' ? state.player.position : carrier.position;
+      bomb.state = 'dropped';
+      bomb.carrier = null;
+      bomb.x = pos.x;
+      bomb.y = Math.max(0, pos.y);
+      bomb.z = pos.z;
+      bomb.progress = 0;
+      deps_.hud.setBanner('Bomb dropped');
+      return;
+    }
+    updatePlant(dt);
+  } else if (bomb.state === 'dropped') {
+    updatePickup();
+  } else if (bomb.state === 'planted') {
+    updateDefuse(dt);
+  } else {
+    deps_.hud.setProgress(-1, '');
+  }
+}
+
+function carrierBot() {
+  const { carrier } = state.round.bomb;
+  return typeof carrier === 'number' ? state.bots[carrier] : null;
+}
+
+// Any living attacker (player or bot) walking within 1.5 m of a dropped bomb picks it up.
+function updatePickup() {
+  const bomb = state.round.bomb;
+  const near = (pos) => Math.hypot(pos.x - bomb.x, pos.z - bomb.z) <= PICKUP_RANGE;
+  if (state.player.alive && near(state.player.position)) {
+    bomb.state = 'carried';
+    bomb.carrier = 'player';
+  } else {
+    for (const bot of state.bots) {
+      if (bot.team !== 0 || !bot.alive || !near(bot.position)) continue;
+      bomb.state = 'carried';
+      bomb.carrier = bot.slot;
+      break;
+    }
+  }
+  if (bomb.state === 'carried') deps_.hud.setBanner('');
 }
 
 // Defuse: a defender (bot or, were the player one, the player) within 4 m of the bomb holds
@@ -107,7 +168,7 @@ function updateDefuse(dt) {
   const bomb = state.round.bomb;
   let working = false;
   for (const bot of state.bots) {
-    if (bot.team !== 1 || !bot.alive) continue;
+    if (bot.team !== 1 || !bot.alive || bot.seesEnemy) continue;
     if (Math.hypot(bot.position.x - bomb.x, bot.position.z - bomb.z) > DEFUSE_RANGE) continue;
     working = true;
     break;
@@ -155,6 +216,8 @@ function endRound(winner, banner) {
   state.round.timer = ROUND_END_TIME;
   state.round.score[winner] += 1;
   state.round.banner = banner;
+  state.round.lastWinner = winner;
+  state.round.playerSurvived = state.player.alive;
   deps_.hud.setBanner(banner);
   deps_.hud.setRound(state.round.number, state.round.score);
   deps_.onRoundEnd?.(winner);
@@ -174,29 +237,51 @@ function siteAt(x, z) {
   return null;
 }
 
-// Plant: the carrier (player) holds E for 3 s inside a site zone during LIVE.
+// Plant: the carrier (player holds E, or a bot standing in the zone with no enemy visible)
+// completes a 3 s hold inside a site zone during LIVE.
 function updatePlant(dt) {
   const bomb = state.round.bomb;
-  const inSite = siteAt(state.player.position.x, state.player.position.z);
-  if (inSite && holdingUse()) {
-    bomb.progress = Math.min(1, bomb.progress + dt / PLANT_TIME);
-    deps_.hud.setProgress(bomb.progress, 'planting');
-    if (bomb.progress >= 1) {
-      bomb.state = 'planted';
-      bomb.site = inSite;
-      bomb.x = state.player.position.x;
-      bomb.y = state.player.position.y;
-      bomb.z = state.player.position.z;
-      bomb.timer = BOMB_TIME;
-      bomb.progress = 0;
-      state.round.phase = 'planted';
-      state.round.timer = BOMB_TIME; // round clock is now the bomb clock
-      deps_.hud.setProgress(-1, '');
-      deps_.hud.setBanner('Bomb planted');
-      deps_.onPlant?.(inSite);
+  let source = null;
+  let inSite = null;
+  if (bomb.carrier === 'player') {
+    source = state.player.position;
+    inSite = state.player.alive && siteAt(source.x, source.z);
+    if (inSite && holdingUse()) {
+      bomb.progress = Math.min(1, bomb.progress + dt / PLANT_TIME);
+      deps_.hud.setProgress(bomb.progress, 'planting');
+      if (bomb.progress >= 1) plantNow(inSite, source.x, source.y, source.z);
+      return;
     }
   } else {
-    bomb.progress = Math.max(0, bomb.progress - dt * 2);
-    deps_.hud.setProgress(bomb.progress > 0 ? bomb.progress : -1, 'planting');
+    const bot = carrierBot();
+    if (bot && bot.alive) {
+      source = bot.position;
+      inSite = siteAt(source.x, source.z);
+      if (inSite && !bot.seesEnemy) {
+        bomb.progress = Math.min(1, bomb.progress + dt / PLANT_TIME);
+        deps_.hud.setProgress(bomb.progress, 'planting');
+        if (bomb.progress >= 1) plantNow(inSite, source.x, source.y, source.z);
+        return;
+      }
+    }
   }
+  bomb.progress = Math.max(0, bomb.progress - dt * 2);
+  deps_.hud.setProgress(bomb.progress > 0 ? bomb.progress : -1, 'planting');
+}
+
+// Shared completion: fix the bomb where it was planted, switch to the PLANTED phase.
+function plantNow(site, x, y, z) {
+  const bomb = state.round.bomb;
+  bomb.state = 'planted';
+  bomb.site = site;
+  bomb.x = x;
+  bomb.y = Math.max(0, y);
+  bomb.z = z;
+  bomb.timer = BOMB_TIME;
+  bomb.progress = 0;
+  state.round.phase = 'planted';
+  state.round.timer = BOMB_TIME; // round clock is now the bomb clock
+  deps_.hud.setProgress(-1, '');
+  deps_.hud.setBanner('Bomb planted');
+  deps_.onPlant?.(site);
 }
