@@ -19,10 +19,25 @@ const GRAVITY = 20;
 const STEP_HEIGHT = 0.45; // walkable ledge: the 0.4 m courtyard steps, nothing taller
 const MAX_FALL = 30;
 
-export function createPlayer(colliders) {
+export function createPlayer(colliders, shootables) {
   const player = state.player;
   const probe = new THREE.Box3();
   const wish = new THREE.Vector3();
+
+  // Invisible hitboxes the bot hitscan can tag as the player: torso capsule + head sphere,
+  // positioned in syncCameraBox each step (three needs a node in the graph to raycast).
+  const hitMaterial = new THREE.MeshBasicMaterial({ visible: false });
+  const torsoBox = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.7, 4, 8), hitMaterial);
+  torsoBox.position.y = 0.95;
+  const headBox = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8), hitMaterial);
+  headBox.position.y = 1.58;
+  const hitRoot = new THREE.Group();
+  hitRoot.add(torsoBox, headBox);
+  for (const mesh of [torsoBox, headBox]) {
+    mesh.userData.playerHit = true;
+    mesh.userData.part = mesh === headBox ? 'head' : 'body';
+  }
+  if (shootables) shootables.push(torsoBox, headBox);
 
   // lift keeps the feet and the crown out of the horizontal tests, so standing on the floor
   // is not read as walking into a wall.
@@ -82,7 +97,9 @@ export function createPlayer(colliders) {
   }
 
   function step(dt) {
+    if (!player.alive) return; // SPECTATE: body frozen, camera stays where it is
     const input = state.input;
+    hitRoot.position.copy(player.position);
     const crouching = input.keys.has('ControlLeft') || input.keys.has('ControlRight');
     if (crouching && !player.crouching) {
       player.crouching = true;
@@ -142,8 +159,30 @@ export function createPlayer(colliders) {
     step,
     look,
     recoil,
+    hitRoot,
     groundSpeed() {
       return Math.hypot(player.velocity.x, player.velocity.z);
     },
   };
+}
+
+// Damage entry point for bot shots (weapons.js botShot). Kevlar halves body hits only; head
+// damage ignores it. Death flips alive; the caller (rounds/HUD) reacts.
+export function damagePlayer(dmg, part) {
+  const player = state.player;
+  if (!player.alive) return false;
+  const amount = part === 'head' ? dmg : (player.kevlar ? dmg * 0.5 : dmg);
+  player.health -= amount;
+  if (player.health > 0) return false;
+  player.health = 0;
+  player.alive = false;
+  return true;
+}
+
+export function respawnPlayer(position) {
+  const player = state.player;
+  player.health = 100;
+  player.alive = true;
+  if (position) player.position.copy(position);
+  player.velocity.set(0, 0, 0);
 }

@@ -9,10 +9,12 @@ import * as THREE from 'three';
 import { state } from './state.js';
 import { createWorld } from './world.js';
 import { createInput } from './input.js';
-import { createPlayer } from './player.js';
+import { createPlayer, respawnPlayer, damagePlayer } from './player.js';
 import { createWeapons } from './weapons.js';
 import { createGrenades } from './grenade.js';
 import { initBots, spawnBots, updateBots, damageBot, botCenter, respawnBots } from './bots.js';
+import { initRounds, updateRounds } from './rounds.js';
+import { initEconomy, createBuyMenu, canOpen, award } from './economy.js';
 import { createHud } from './hud.js';
 
 const SIM_DT = 1 / 60;
@@ -51,7 +53,8 @@ const world = createWorld(scene);
 initBots(scene, world, (origin, dir, spread, recordIndex) => weapons.botShot(origin, dir, spread, recordIndex));
 spawnBots(scene);
 const hud = createHud();
-const player = createPlayer(world.colliders);
+const player = createPlayer(world.colliders, world.shootables);
+scene.add(player.hitRoot);
 const weapons = createWeapons(camera, scene, {
   shootables: world.shootables,
   random,
@@ -60,6 +63,26 @@ const weapons = createWeapons(camera, scene, {
 });
 const grenades = createGrenades(scene, world.colliders, { onExplode });
 const input = createInput(renderer.domElement, onLockChange);
+
+initEconomy();
+const buyMenu = createBuyMenu(weapons);
+const roundDeps = {
+  world,
+  player,
+  respawnBots,
+  respawnPlayer,
+  hud,
+  onRoundEnd(winner) {
+    award(winner === 0 ? 'win' : 'loss');
+  },
+  onPlant() {
+    award('plant');
+  },
+  onMatchEnd() {
+    cleared = true;
+  },
+};
+initRounds(roundDeps);
 
 const body = player.state;
 const halfFovTan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
@@ -82,7 +105,10 @@ function applyDamage(object, part, amount) {
     hud.setScore(state.score);
     hud.hitMarker(killed, part === 'head', markerHoldMs);
   }
-  if (killed) hud.addKill(bot.name);
+  if (killed) {
+    hud.addKill(bot.name);
+    if (bot.team === 1) award('kill');
+  }
   return killed;
 }
 
@@ -95,6 +121,11 @@ function onExplode(position) {
     const distance = blastCenter.distanceTo(position);
     if (distance >= BLAST_RADIUS) continue;
     applyDamage(bot.body.torso, 'body', BLAST_DAMAGE * (1 - distance / BLAST_RADIUS));
+  }
+  // The player's own blast hurts the player as well.
+  const playerDistance = body.position.distanceTo(position);
+  if (playerDistance < BLAST_RADIUS) {
+    damagePlayer(BLAST_DAMAGE * (1 - playerDistance / BLAST_RADIUS), 'body');
   }
 }
 
@@ -115,12 +146,15 @@ function restart() {
   state.stats.hits = 0;
   state.stats.kills = 0;
   state.stats.headshots = 0;
-  respawnBots();
+  initEconomy();
+  state.round.score = [0, 0];
+  initRounds(roundDeps);
   weapons.refill();
   grenades.reset();
   hud.setScore(0);
   hud.setAmmo(weapons.activeSlot().mag, weapons.activeSlot().reserve);
   hud.setGrenades(state.grenades.count);
+  hud.setSpectate(false);
 }
 
 function onLockChange(locked) {
@@ -156,6 +190,7 @@ function aimAt(point) {
 
 function step(dt) {
   state.time += dt;
+  updateRounds(dt);
   player.step(dt);
   weapons.step(dt);
   grenades.step(dt);
@@ -171,12 +206,21 @@ function frame(now) {
     const look = input.takeLook();
     player.look(look.x, look.y);
     const pressed = state.input.pressed;
-    if (pressed.has('KeyR')) weapons.reload();
-    if (pressed.has('Digit1')) weapons.switchTo(0);
-    if (pressed.has('Digit2')) weapons.switchTo(1);
-    if (pressed.has('Digit3')) weapons.switchTo(2);
-    if (pressed.has('KeyG') || pressed.has('MouseMiddle')) grenades.throw();
-    pressed.clear();
+    if (buyMenu.open) {
+      if (pressed.has('KeyB') || pressed.has('Escape')) buyMenu.close();
+      else for (const code of ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5']) {
+        if (pressed.has(code)) buyMenu.handleKey(code);
+      }
+      pressed.clear(); // the menu owns the keyboard while open
+    } else {
+      if (pressed.has('KeyB') && canOpen()) buyMenu.toggle();
+      if (pressed.has('KeyR')) weapons.reload();
+      if (pressed.has('Digit1')) weapons.switchTo(0);
+      if (pressed.has('Digit2')) weapons.switchTo(1);
+      if (pressed.has('Digit3')) weapons.switchTo(2);
+      if (pressed.has('KeyG') || pressed.has('MouseMiddle')) grenades.throw();
+      pressed.clear();
+    }
     accumulator += dt;
     let steps = 0;
     while (accumulator >= SIM_DT && steps < MAX_STEPS) {
@@ -193,6 +237,9 @@ function frame(now) {
     hud.setReload(slot.reloadLeft > 0 ? 1 - slot.reloadLeft / record.reload : -1);
     hud.setGrenades(state.grenades.count);
     hud.setCrosshair(Math.max(3, weapons.currentSpread() / halfFovTan * window.innerHeight / 2));
+    hud.setRoundTimer(state.round.timer);
+    hud.setMoney(state.economy.money);
+    hud.setSpectate(!body.alive && state.round.phase !== 'match_end');
   }
   renderer.render(scene, camera);
 }

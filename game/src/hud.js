@@ -13,8 +13,8 @@ const COPY = {
     action: 'Click to resume',
   },
   end: {
-    title: 'Range cleared',
-    copy: 'Every dummy is down.',
+    title: 'Match over',
+    copy: 'Final score is in the top HUD.',
     action: 'Play again',
   },
 };
@@ -43,6 +43,46 @@ export function createHud() {
   let lastReload = -2; // -1 is the hidden state, so start one step away
   let lastGrenades = -1;
   let lastGap = -1;
+
+  // Round HUD, built here so index.html stays untouched: timer, score, money, banner,
+  // objective progress bar and the death line.
+  const roundHud = document.createElement('div');
+  roundHud.id = 'round-hud';
+  roundHud.style.cssText = 'position:absolute;top:14px;left:50%;transform:translateX(-50%);'
+    + 'text-align:center;color:#eee;font:13px/1.5 monospace;text-shadow:0 1px 2px #000;';
+  const timerText = document.createElement('div');
+  timerText.id = 'round-timer';
+  const scoreText = document.createElement('div');
+  scoreText.id = 'round-score';
+  const moneyText = document.createElement('div');
+  moneyText.id = 'money';
+  roundHud.append(timerText, scoreText, moneyText);
+  const banner = document.createElement('div');
+  banner.id = 'banner';
+  banner.style.cssText = 'position:absolute;top:26%;left:50%;transform:translateX(-50%);'
+    + 'color:#fff;font:bold 20px monospace;text-shadow:0 1px 3px #000;white-space:nowrap;';
+  banner.hidden = true;
+  const progress = document.createElement('div');
+  progress.id = 'objective-progress';
+  progress.hidden = true;
+  progress.style.cssText = 'position:absolute;bottom:22%;left:50%;transform:translateX(-50%);'
+    + 'width:220px;height:10px;border:1px solid #999;background:rgba(0,0,0,.5);';
+  const progressFill = document.createElement('div');
+  progressFill.style.cssText = 'height:100%;width:0%;background:#e9a23b;';
+  progress.appendChild(progressFill);
+  const dead = document.createElement('div');
+  dead.id = 'death-line';
+  dead.hidden = true;
+  dead.style.cssText = 'position:absolute;top:36%;left:50%;transform:translateX(-50%);'
+    + 'color:#f55;font:bold 26px monospace;text-shadow:0 1px 3px #000;';
+  dead.textContent = 'YOU DIED — waiting for round end';
+  const hudRoot = document.getElementById('hud');
+  hudRoot.append(roundHud, banner, progress, dead);
+  let lastTimer = -1;
+  let lastRoundScore = '';
+  let lastMoney = -1;
+  let lastProgress = -2;
+  let lastLabel = '';
 
   return {
     setWeapon(name) {
@@ -120,6 +160,53 @@ export function createHud() {
     },
     onPlay(handler) {
       play.addEventListener('click', handler);
+    },
+    // Round timer in m:ss, cached at 1 s resolution.
+    setRoundTimer(seconds) {
+      const s = Math.max(0, Math.ceil(seconds));
+      if (s === lastTimer) return;
+      lastTimer = s;
+      timerText.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    },
+    // Score line "2 - 1" plus round number.
+    setRound(number, score) {
+      const text = `Round ${number}   ${score[0]} - ${score[1]}`;
+      if (text === lastRoundScore) return;
+      lastRoundScore = text;
+      scoreText.textContent = text;
+    },
+    setMoney(value) {
+      if (value === lastMoney) return;
+      lastMoney = value;
+      moneyText.textContent = `$${value}`;
+    },
+    setBanner(text) {
+      if (!text) {
+        banner.hidden = true;
+        return;
+      }
+      banner.hidden = false;
+      banner.textContent = text;
+    },
+    // progress 0..1 with a label; -1 hides. Cached so the DOM moves in 2% steps.
+    setProgress(value, label) {
+      const step = value < 0 ? -1 : Math.round(value * 50) / 50;
+      if (step === lastProgress && label === lastLabel) return;
+      lastProgress = step;
+      lastLabel = label;
+      if (step < 0) {
+        progress.hidden = true;
+        return;
+      }
+      progress.hidden = false;
+      progressFill.style.width = `${Math.round(step * 100)}%`;
+    },
+    setSpectate(show) {
+      dead.hidden = !show;
+    },
+    showMatchEnd(score) {
+      this.showOverlay('end', score[0]);
+      banner.hidden = true;
     },
   };
 }

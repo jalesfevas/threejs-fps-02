@@ -17,6 +17,10 @@ export const state = {
     height: 1.8, // full body height for collision: 1.8 standing, 1.3 crouched
     onGround: true,
     crouching: false,
+    health: 100,
+    alive: true,
+    kevlar: false,
+    team: 0, // 0 = attackers (player team), 1 = defenders
   },
 
   // One record per weapon slot, indexed by WEAPONS order in weapons.js. The active slot plus

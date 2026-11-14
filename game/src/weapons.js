@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { state } from './state.js';
+import { damagePlayer } from './player.js';
 
 // name, magazine, reserve, body/head damage, rounds per minute, reload seconds, spread standing
 // vs moving (radians, at the 5.2 m/s walk reference), recoil per shot, viewmodel muzzle offset.
@@ -181,6 +182,7 @@ export function createWeapons(camera, scene, opts) {
   function tryFire(spread) {
     const rec = WEAPONS[weapon.slot];
     const slot = weapon.slots[weapon.slot];
+    if (!state.player.alive) return false; // spectating: no firing
     if (weapon.switchLeft > 0 || slot.reloadLeft > 0 || slot.cooldown > 0) return false;
     if (slot.mag <= 0) {
       reload(); // dry trigger feeds a fresh magazine
@@ -337,6 +339,9 @@ export function createWeapons(camera, scene, opts) {
         const head = hit.object.userData.part === 'head';
         applyDamage(hit.object, head ? 'head' : 'body',
           head ? rec.damageHead : rec.damageBody);
+      } else if (hit.object.userData.playerHit) {
+        const head = hit.object.userData.part === 'head';
+        damagePlayer(head ? rec.damageHead : rec.damageBody, head ? 'head' : 'body');
       }
     }
   }
