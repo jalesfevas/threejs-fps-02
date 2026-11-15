@@ -15,9 +15,12 @@ export function initEconomy() {
   state.economy = { money: 800, open: false, spent: 0 };
 }
 
+// Classic-style ceiling: no path may push money above this.
+const MONEY_CAP = 16000;
+
 export function award(kind) {
   const amounts = { kill: 300, win: 3250, loss: 1400, plant: 300 };
-  state.economy.money += amounts[kind] ?? 0;
+  state.economy.money = Math.min(MONEY_CAP, state.economy.money + (amounts[kind] ?? 0));
 }
 
 export function canOpen() {
@@ -29,7 +32,7 @@ export function canOpen() {
 // that weapon, Kilnpot adds a grenade, Kevlar sets the flag.
 export function spend(item, weapons) {
   if (state.economy.money < item.cost) return false;
-  state.economy.money -= item.cost;
+  state.economy.money = Math.min(MONEY_CAP, state.economy.money - item.cost);
   state.economy.spent += item.cost;
   if (item.kind === 'weapon') {
     const rec = weapons.WEAPONS[item.index];

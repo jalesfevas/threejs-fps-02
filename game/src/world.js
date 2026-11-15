@@ -75,7 +75,22 @@ export function createWorld(scene) {
 
   // Repeats scale ×4 with the 512 px tile so ground coverage per world metre is unchanged.
   const SURFACES = {
-    sand: { repeat: [40, 28], draw: (ctx, random) => speckle(ctx, random, 5000, 0.18) },
+    sand: {
+      repeat: [40, 28],
+      // Round-4: patch variation — seeded darker/lighter dirt blobs so the packed yard
+      // floor reads as ground, not one uniform field.
+      draw: (ctx, random) => {
+        speckle(ctx, random, 5000, 0.18);
+        for (let i = 0; i < 52; i += 1) {
+          const dark = random() > 0.42;
+          ctx.fillStyle = `rgba(${dark ? '58,42,28' : '238,224,196'},${(0.05 + random() * 0.09).toFixed(3)})`;
+          ctx.beginPath();
+          ctx.ellipse(random() * TEX_SIZE, random() * TEX_SIZE,
+            14 + random() * 46, 8 + random() * 26, random() * Math.PI, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      },
+    },
     brick: { repeat: [16, 8], draw: brickCourses },
     slate: { repeat: [12, 12], draw: (ctx, random) => speckle(ctx, random, 3600, 0.15) },
     crate: { repeat: [1, 1], draw: woodGrain },
@@ -103,6 +118,25 @@ export function createWorld(scene) {
   const group = new THREE.Group();
   scene.add(group);
 
+  // Round-4: the courtyard platform gets its own surface — slate tiles with a darker mortar
+  // grid (joints every quarter tile → ~0.75 m tiles at repeat 3 x 2.4 over the 9 x 7 slab).
+  const tileCanvas = surfaceCanvas('slate', 0x51ab, (ctx, random) => {
+    ctx.strokeStyle = 'rgba(30,34,40,0.75)';
+    ctx.lineWidth = 5;
+    const step = TEX_SIZE / 4;
+    for (let i = 0; i <= 4; i += 1) {
+      ctx.beginPath(); ctx.moveTo(i * step, 0); ctx.lineTo(i * step, TEX_SIZE); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, i * step); ctx.lineTo(TEX_SIZE, i * step); ctx.stroke();
+    }
+    speckle(ctx, random, 2400, 0.15);
+  });
+  const tileTexture = new THREE.CanvasTexture(tileCanvas);
+  tileTexture.wrapS = tileTexture.wrapT = THREE.RepeatWrapping;
+  tileTexture.colorSpace = THREE.SRGBColorSpace;
+  tileTexture.anisotropy = 4;
+  tileTexture.repeat.set(3, 2.4);
+  materials.platformTile = new THREE.MeshStandardMaterial({ map: tileTexture, roughness: 0.9, metalness: 0.03 });
+
   const colliders = [];
   const shootables = [];
 
@@ -121,8 +155,9 @@ export function createWorld(scene) {
   let crateVariantIndex = 0;
   let brickVariantIndex = 0;
 
+  // `material` may be a palette name or an already-built material (e.g. platformTile).
   function box(width, height, depth, x, y, z, materialName) {
-    let material = materials[materialName];
+    let material = typeof materialName === 'string' ? materials[materialName] : materialName;
     if (materialName === 'crate') {
       material = crateVariants[crateVariantIndex % crateVariants.length];
       crateVariantIndex += 1;
@@ -176,10 +211,39 @@ export function createWorld(scene) {
   ));
   box(1.4, 2.6, 1.4, -24.2, 7.2, -16.2, 'brick'); // chimney shoulder
 
-  // Mid courtyard: raised slate platform, 1.2 m up, with three 0.4 m steps on the south side.
-  box(9, 1.2, 7, 0, 0.6, 0, 'slate');
+  // Mid courtyard: raised tiled platform, 1.2 m up, with three 0.4 m steps on the south side.
+  // Round-4: thin darker rim strips cap the top edge (bevel illusion); they are plain decor
+  // meshes — the platform slab below already carries the collider and the shootable entry.
+  box(9, 1.2, 7, 0, 0.6, 0, materials.platformTile);
+  const rimGeoX = new THREE.BoxGeometry(9.16, 0.12, 0.12);
+  const rimGeoZ = new THREE.BoxGeometry(0.12, 0.12, 7.16);
+  for (const [geo, rx2, rz2] of [
+    [rimGeoX, 0, -3.51], [rimGeoX, 0, 3.51], [rimGeoZ, -4.58, 0], [rimGeoZ, 4.58, 0],
+  ]) {
+    const rim = new THREE.Mesh(geo, materials.hairline);
+    rim.position.set(rx2, 1.22, rz2);
+    rim.castShadow = true;
+    rim.receiveShadow = true;
+    group.add(rim);
+  }
   box(3, 0.8, 1.0, 0, 0.4, 3.9, 'slate');
   box(3, 0.4, 1.0, 0, 0.2, 4.9, 'slate');
+
+  // Round-4: dark scuff strips along the wall bases — flat decor quads, no collider and no
+  // shootable entry (the walls behind them already stop bullets and feet).
+  const stripMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color('#2e2622'), roughness: 0.95, metalness: 0.03, transparent: true, opacity: 0.5,
+  });
+  for (const [width, depth, sx, sz] of [
+    [26, 0.8, -8, -19.5], [14, 0.6, 18, -19.6], [22, 0.7, -6, 19.5], [12, 0.6, -21, 19.6],
+    [0.7, 20, -29.5, 2], [0.6, 14, 29.6, 10], [0.7, 16, 29.5, -8],
+  ]) {
+    const strip = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), stripMaterial);
+    strip.rotation.x = -Math.PI / 2;
+    strip.position.set(sx, 0.015, sz);
+    strip.receiveShadow = true;
+    group.add(strip);
+  }
 
   // Courtyard cover: two low walls to fight over.
   box(3, 1.1, 1.2, -6, 0.55, 8, 'hairline');
@@ -209,8 +273,10 @@ export function createWorld(scene) {
   box(1.7, 1.7, 1.7, -24, 0.85, 12, 'crate');
 
   // --- Round-3 art pass: small props --------------------------------------------------------
-  // Shootable but non-colliding decoration (bullets stop on them, feet do not), placed
-  // against walls and platform edges to break empty sightlines without closing lanes.
+  // Non-colliding, non-shootable decoration (bullets pass through them, feet do not collide),
+  // placed against walls and platform edges to break empty sightlines without closing lanes.
+  // Round-4: props are excluded from the bullet raycast list — inconsistent hits on decor
+  // read as shots vanishing; the solids behind them are what should absorb the bullet.
   function prop(geo, x, y, z, materialName, rx = 0, ry = 0, rz = 0) {
     const mesh = new THREE.Mesh(geo, materials[materialName]);
     mesh.position.set(x, y, z);
@@ -218,7 +284,6 @@ export function createWorld(scene) {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     group.add(mesh);
-    shootables.push(mesh);
     return mesh;
   }
   const pipeGeo = new THREE.CylinderGeometry(0.14, 0.14, 12, 8);
