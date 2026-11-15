@@ -67,8 +67,7 @@ export const state = {
     lookY: 0,
   },
 
-  // Dynamic things in the world: target dummies today, bots in a later session.
-  entities: [],
+  // Bots, spawned and owned by bots.js each round.
   bots: [],
 
   // Round bookkeeping; the round module in a later session owns the transitions.

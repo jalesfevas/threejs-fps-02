@@ -22,12 +22,14 @@ export function createWorld(scene) {
     };
   }
 
+  const TEX_SIZE = 512; // round-3 art pass: 128 px read as mush up close
+
   function surfaceCanvas(name, seed, draw) {
     const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = 128;
+    canvas.width = canvas.height = TEX_SIZE;
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = PALETTE[name];
-    ctx.fillRect(0, 0, 128, 128);
+    ctx.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
     draw(ctx, texRandom(seed));
     return canvas;
   }
@@ -37,42 +39,47 @@ export function createWorld(scene) {
     for (let i = 0; i < count; i += 1) {
       const light = random() > 0.5;
       ctx.fillStyle = `rgba(${light ? '255,250,238' : '20,14,10'},${(alpha * random()).toFixed(3)})`;
-      ctx.fillRect(random() * 128, random() * 128, 1 + random() * 2, 1 + random() * 2);
+      ctx.fillRect(random() * TEX_SIZE, random() * TEX_SIZE, 1 + random() * 2, 1 + random() * 2);
     }
   }
 
-  // Fired-brick courses: darker mortar lines every 16 px, alternating row offsets.
+  // Fired-brick courses: darker mortar lines every 64 px, alternating row offsets.
   function brickCourses(ctx, random) {
     ctx.fillStyle = 'rgba(30,16,12,0.55)';
-    for (let y = 0; y < 128; y += 16) {
-      ctx.fillRect(0, y, 128, 2);
-      const shift = (y / 16) % 2 ? 16 : 0;
-      for (let x = shift; x < 128; x += 32) ctx.fillRect(x, y, 2, 16);
+    for (let y = 0; y < TEX_SIZE; y += 64) {
+      ctx.fillRect(0, y, TEX_SIZE, 6);
+      const shift = (y / 64) % 2 ? 64 : 0;
+      for (let x = shift; x < TEX_SIZE; x += 128) ctx.fillRect(x, y, 6, 64);
     }
-    speckle(ctx, random, 220, 0.16);
+    speckle(ctx, random, 2600, 0.16);
   }
 
   // Wood grain for the crates: long horizontal streaks plus knots.
   function woodGrain(ctx, random) {
-    for (let i = 0; i < 46; i += 1) {
-      const y = random() * 128;
+    for (let i = 0; i < 120; i += 1) {
+      const y = random() * TEX_SIZE;
       const dark = random() > 0.5;
       ctx.strokeStyle = `rgba(${dark ? '52,32,16' : '230,200,150'},${(0.10 + random() * 0.20).toFixed(3)})`;
-      ctx.lineWidth = 1 + random() * 2;
+      ctx.lineWidth = 1 + random() * 3;
       ctx.beginPath();
       ctx.moveTo(0, y);
-      ctx.bezierCurveTo(40, y + (random() - 0.5) * 10, 90, y + (random() - 0.5) * 10, 128, y + (random() - 0.5) * 6);
+      ctx.bezierCurveTo(
+        TEX_SIZE * 0.31, y + (random() - 0.5) * 36,
+        TEX_SIZE * 0.70, y + (random() - 0.5) * 36,
+        TEX_SIZE, y + (random() - 0.5) * 20,
+      );
       ctx.stroke();
     }
-    speckle(ctx, random, 90, 0.12);
+    speckle(ctx, random, 500, 0.12);
   }
 
+  // Repeats scale ×4 with the 512 px tile so ground coverage per world metre is unchanged.
   const SURFACES = {
-    sand: { repeat: [10, 7], draw: (ctx, random) => speckle(ctx, random, 420, 0.18) },
-    brick: { repeat: [4, 2], draw: brickCourses },
-    slate: { repeat: [3, 3], draw: (ctx, random) => speckle(ctx, random, 300, 0.15) },
+    sand: { repeat: [40, 28], draw: (ctx, random) => speckle(ctx, random, 5000, 0.18) },
+    brick: { repeat: [16, 8], draw: brickCourses },
+    slate: { repeat: [12, 12], draw: (ctx, random) => speckle(ctx, random, 3600, 0.15) },
     crate: { repeat: [1, 1], draw: woodGrain },
-    terracotta: { repeat: [3, 2], draw: (ctx, random) => speckle(ctx, random, 260, 0.14) },
+    terracotta: { repeat: [12, 8], draw: (ctx, random) => speckle(ctx, random, 3200, 0.14) },
   };
 
   const materials = {};
@@ -100,19 +107,28 @@ export function createWorld(scene) {
   const shootables = [];
 
   // Slightly varied crate materials: three clones of the wood texture with small lightness
-  // offsets, picked round-robin so stacked crates do not read as one flat colour.
-  const crateVariants = [-0.05, 0, 0.05].map((shift) => {
-    const variant = materials.crate.clone();
-    variant.color = new THREE.Color(1 + shift, 1 + shift, 1 + shift);
-    return variant;
-  });
+  // offsets, picked round-robin so stacked crates do not read as one flat colour. Brick
+  // walls get the same treatment so long wall runs are not one flat field.
+  function tintVariants(materialName, shifts) {
+    return shifts.map((shift) => {
+      const variant = materials[materialName].clone();
+      variant.color = new THREE.Color(1 + shift, 1 + shift, 1 + shift);
+      return variant;
+    });
+  }
+  const crateVariants = tintVariants('crate', [-0.05, 0, 0.05]);
+  const brickVariants = tintVariants('brick', [-0.05, 0.02, 0.06]);
   let crateVariantIndex = 0;
+  let brickVariantIndex = 0;
 
   function box(width, height, depth, x, y, z, materialName) {
     let material = materials[materialName];
     if (materialName === 'crate') {
       material = crateVariants[crateVariantIndex % crateVariants.length];
       crateVariantIndex += 1;
+    } else if (materialName === 'brick') {
+      material = brickVariants[brickVariantIndex % brickVariants.length];
+      brickVariantIndex += 1;
     }
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
     mesh.position.set(x, y, z);
@@ -192,9 +208,61 @@ export function createWorld(scene) {
   box(1.7, 1.7, 1.7, -14, 2.55, 8, 'crate');
   box(1.7, 1.7, 1.7, -24, 0.85, 12, 'crate');
 
-  // Light: one hemisphere (dusk sky over warm ground) and one low western sun casting the
-  // map's only shadows, with an ortho frustum covering the full 60 x 40 yard.
-  const hemi = new THREE.HemisphereLight(new THREE.Color(PALETTE.sky), new THREE.Color(PALETTE.brick), 1.0);
+  // --- Round-3 art pass: small props --------------------------------------------------------
+  // Shootable but non-colliding decoration (bullets stop on them, feet do not), placed
+  // against walls and platform edges to break empty sightlines without closing lanes.
+  function prop(geo, x, y, z, materialName, rx = 0, ry = 0, rz = 0) {
+    const mesh = new THREE.Mesh(geo, materials[materialName]);
+    mesh.position.set(x, y, z);
+    mesh.rotation.set(rx, ry, rz);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    shootables.push(mesh);
+    return mesh;
+  }
+  const pipeGeo = new THREE.CylinderGeometry(0.14, 0.14, 12, 8);
+  const vpipeGeo = new THREE.CylinderGeometry(0.14, 0.14, 3.4, 8);
+  const tileGeo = new THREE.BoxGeometry(2.6, 0.14, 0.6);
+  const plankGeo = new THREE.BoxGeometry(0.34, 3.4, 0.09);
+  const poleGeo = new THREE.CylinderGeometry(0.08, 0.08, 3.6, 8);
+  // Roof tile strips along the outer wall tops (one per wall segment).
+  prop(tileGeo, -14, 4.62, -20.1, 'terracotta', 0, 0, 0);
+  prop(tileGeo, 14, 4.62, -20.1, 'terracotta');
+  prop(tileGeo, -14, 4.62, 20.1, 'terracotta');
+  prop(tileGeo, 14, 4.62, 20.1, 'terracotta');
+  prop(tileGeo, -30.1, 4.62, -10, 'terracotta', 0, Math.PI / 2, 0);
+  prop(tileGeo, -30.1, 4.62, 10, 'terracotta', 0, Math.PI / 2, 0);
+  prop(tileGeo, 30.1, 4.62, -10, 'terracotta', 0, Math.PI / 2, 0);
+  prop(tileGeo, 30.1, 4.62, 10, 'terracotta', 0, Math.PI / 2, 0);
+  // Drain pipes running along the north and south walls, just above head height.
+  prop(pipeGeo, -16, 2.7, -19.85, 'slate', 0, 0, Math.PI / 2);
+  prop(pipeGeo, 16, 2.7, -19.85, 'slate', 0, 0, Math.PI / 2);
+  prop(pipeGeo, -16, 2.7, 19.85, 'slate', 0, 0, Math.PI / 2);
+  prop(pipeGeo, 16, 2.7, 19.85, 'slate', 0, 0, Math.PI / 2);
+  // Vertical downpipes at the lane-divider ends.
+  prop(vpipeGeo, -10.6, 1.7, -7.8, 'slate');
+  prop(vpipeGeo, 10.6, 1.7, -7.8, 'slate');
+  prop(vpipeGeo, -10.6, 1.7, 5.8, 'slate');
+  prop(vpipeGeo, 10.6, 1.7, 5.8, 'slate');
+  // Wooden planks leaning against walls and the courtyard platform.
+  prop(plankGeo, -28.4, 1.6, -6, 'crate', 0, 0.4, 0.22);
+  prop(plankGeo, -27.9, 1.6, -4.6, 'crate', 0, 0.35, 0.2);
+  prop(plankGeo, 28.4, 1.6, 8, 'crate', 0, -0.4, -0.22);
+  prop(plankGeo, 27.9, 1.6, 9.4, 'crate', 0, -0.35, -0.2);
+  prop(plankGeo, -4.4, 1.3, 3.2, 'crate', 0, 1.1, 0.24);
+  prop(plankGeo, 4.4, 1.3, -3.2, 'crate', 0, -1.1, -0.24);
+  // Poles breaking the long empty courtyard sightlines at platform corners.
+  prop(poleGeo, -4.2, 1.8, -3.2, 'crate');
+  prop(poleGeo, 4.2, 1.8, 3.2, 'crate');
+  prop(poleGeo, -19, 1.8, 15.5, 'crate');
+  prop(poleGeo, 19, 1.8, 12.5, 'crate');
+
+  // Light: one hemisphere (dusk sky over a warmer ground bounce) plus the low western sun
+  // casting the map's only shadows, with an ortho frustum covering the full 60 x 40 yard.
+  // Round-3: a second dim fill light opposite the sun gives the yard a gradient feel
+  // instead of one hard sun side and one flat black side.
+  const hemi = new THREE.HemisphereLight(new THREE.Color(PALETTE.sky), new THREE.Color('#a5683f'), 1.0);
   scene.add(hemi);
 
   const sun = new THREE.DirectionalLight(new THREE.Color('#ffd9a0'), 1.7);
@@ -210,6 +278,11 @@ export function createWorld(scene) {
   sun.shadow.camera.far = 100;
   sun.shadow.bias = -0.0004;
   scene.add(sun, sun.target);
+
+  const fill = new THREE.DirectionalLight(new THREE.Color('#7a86b0'), 0.3);
+  fill.position.set(32, 10, -16);
+  fill.target.position.set(0, 0, 0);
+  scene.add(fill, fill.target);
 
   // Gradient dusk sky: one big inverted sphere, vertical gradient baked into a 1 x 256
   // canvas (zenith blue-violet down to the fog-coloured horizon). fog=false so distance

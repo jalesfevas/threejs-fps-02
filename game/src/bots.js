@@ -78,10 +78,9 @@ const PATROLS = {
   ],
 };
 
-// TODO: module-level temp vectors, materials, shared geometry.
+// TODO: module-level temp vectors and shared geometry.
 const temps = { a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3() };
 
-const materials = {};
 const geometry = {};
 
 function makeBody(scene, team) {
@@ -196,9 +195,9 @@ const VISION_RANGE = 40;
 const VISION_HALF_COS = Math.cos(THREE.MathUtils.degToRad(35));
 const GUNSHOT_HEAR_RANGE = 25;
 const AIM_ERROR_START = 0.09;
-const AIM_ERROR_END = 0.012;
-const AIM_TIME = 1.6; // seconds of visibility to reach the tightest aim
-const BURST_GAP = 0.11; // seconds between burst rounds
+const AIM_ERROR_END = 0.03; // round-3 tuning: was 0.012 — defenders hit practically always
+const AIM_TIME = 3.0; // seconds of visibility to reach the tightest aim (was 1.6)
+const BURST_GAP = 0.22; // seconds between burst rounds (was 0.11 — bots only; player fire is separate)
 const BURST_REST = 0.55;
 
 const ray = new THREE.Ray();
@@ -293,6 +292,7 @@ function faceToward(bot, x, z, dt, turnRate = 6) {
 }
 
 export function updateBots(dt) {
+  defenderPush = 0; // round-3: per-tick cap on defenders chasing the carrier
   for (const bot of state.bots) {
     if (!bot.alive) continue; // death fall is handled in stepBodies below
     const seen = acquireTarget(bot);
@@ -381,21 +381,36 @@ export function hearGunshot(x, z) {
 // --- Bomb objective steering ----------------------------------------------------------------
 // The bot carrier walks to the nearer site; defenders converge on a planted bomb; attackers
 // converge on a dropped bomb. Enemies in sight (engage mode) always override these.
+// objectiveFor reuses one module-level result object — it is read (goalX/goalZ/goalRange
+// copied out) immediately by the caller, never stored, so sharing it is safe.
+const objectiveResult = { x: 0, z: 0, range: 0 };
+// Round-3 tuning: at most 2 defenders push the carrier at once (the third holds), so the
+// attacking side always has a window. Reset every tick in updateBots.
+let defenderPush = 0;
+
 function objectiveFor(bot) {
   const bomb = state.round.bomb;
   if (bomb.state === 'planted' && bot.team === 1) {
-    return { x: bomb.x, z: bomb.z, range: 2.5 };
+    objectiveResult.x = bomb.x; objectiveResult.z = bomb.z; objectiveResult.range = 2.5;
+    return objectiveResult;
   }
   if (bot.team === 1 && state.round.phase === 'live'
     && (bomb.state === 'carried' || bomb.state === 'dropped')) {
-    // Hunt the carrier / camp the dropped bomb BEFORE it goes down, not only after.
+    // Hunt the carrier / camp the dropped bomb BEFORE it goes down, not only after —
+    // but only the first two defenders each tick; the rest stay on patrol.
+    if (defenderPush >= 2) return null;
     const pos = bomb.state === 'dropped' ? bomb
       : bomb.carrier === 'player' ? state.player.position
       : (typeof bomb.carrier === 'number' ? state.bots[bomb.carrier]?.position : null);
-    if (pos) return { x: pos.x, z: pos.z, range: 2.5 };
+    if (pos) {
+      defenderPush += 1;
+      objectiveResult.x = pos.x; objectiveResult.z = pos.z; objectiveResult.range = 2.5;
+      return objectiveResult;
+    }
   }
   if (bomb.state === 'dropped' && bot.team === 0) {
-    return { x: bomb.x, z: bomb.z, range: 1.0 };
+    objectiveResult.x = bomb.x; objectiveResult.z = bomb.z; objectiveResult.range = 1.0;
+    return objectiveResult;
   }
   if (bomb.state === 'carried' && bomb.carrier === bot.slot) {
     const a = worldRef.sites.A.center;
@@ -403,7 +418,8 @@ function objectiveFor(bot) {
     const da = Math.hypot(a.x - bot.position.x, a.z - bot.position.z);
     const db = Math.hypot(b.x - bot.position.x, b.z - bot.position.z);
     const site = da <= db ? a : b;
-    return { x: site.x, z: site.z, range: 2.0 };
+    objectiveResult.x = site.x; objectiveResult.z = site.z; objectiveResult.range = 2.0;
+    return objectiveResult;
   }
   return null;
 }

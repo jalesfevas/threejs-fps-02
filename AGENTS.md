@@ -27,3 +27,9 @@ direktori ini) WAJIB mematuhinya. Versi panjang: skill `agent-bounty-platforms`.
 8. Nol transaksi on-chain, nol deposit, nol klaim tanpa perintah eksplisit pemilik.
 9. Kunci tidak pernah dicetak, tidak pernah jadi argumen shell; hanya path berkas.
 10. Hadiah di escrow belum adalah uang di wallet: buktikan on-chain sebelum menyebut angka "diterima".
+11. Sesi build (apa pun artefaknya) BELUM selesai sampai inti loop-nya teruji sukses:
+    untuk game = simulasi satu pertandingan penuh dan PEMBEBANJIN bisa menang minimal
+    satu ronde (bukan hanya tidak crash); untuk pipeline = satu submit nyata
+    terverifikasi di /api/agents/me; untuk gate = satu kasus pass + satu kasus gagal.
+    "Syntax pass + server 200" BUKAN definisi selesai. Lapor hasil uji inti ini
+    bersama laporan sesi — tanpa itu, status sesi = "belum diverifikasi".
