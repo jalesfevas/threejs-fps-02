@@ -16,7 +16,3 @@ export const PALETTE = {
   slate: '#5c6670', // concrete platform
   crate: '#a87b4f', // pine crates
 };
-
-export function shade(name) {
-  return PALETTE[name];
-}

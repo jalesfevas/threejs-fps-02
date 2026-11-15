@@ -64,7 +64,7 @@ function nearestNode(x, z) {
   return best;
 }
 
-// Patrol loops (node index cycles) and hold nodes per team. Attackers rotate between both
+// Patrol loops (node index cycles) per team. Attackers rotate between both
 // sites through the courtyard; defenders split west/mid/east and hold their site.
 const PATROLS = {
   0: [
@@ -76,10 +76,6 @@ const PATROLS = {
     [4, 9, 14, 11, 14, 9, 4],
     [5, 14, 11, 14, 5],
   ],
-};
-const HOLDS = {
-  0: [10, 11, 9],
-  1: [10, 11, 14],
 };
 
 // TODO: module-level temp vectors, materials, shared geometry.
@@ -141,6 +137,17 @@ export function applyTeams(playerTeam) {
   }
 }
 
+// Spawn corners per team: index 1 belongs to the player (rounds.js respawns them there),
+// so bots take the remaining corners in order 0, 2, 3, … and if a side ever has more bots
+// than free corners, the overflow fans out 0.9 m beside the last corner. Writes into out.
+const PLAYER_SPAWN_INDEX = 1;
+function teamSpawnPoint(list, ordinal, out) {
+  const index = ordinal < PLAYER_SPAWN_INDEX ? ordinal : ordinal + 1;
+  if (index < list.length) return out.copy(list[index].position);
+  const base = list[list.length - 1].position;
+  return out.set(base.x + (ordinal - list.length + 2) * 0.9, 0, base.z + 0.9);
+}
+
 // Spawn all five bots: the two friendly ones and the three opposing ones, each walking its
 // team's patrol loop; world.spawn positions carry y=0. Initial teams: player side attacks
 // in the first half (rounds.js re-tags via applyTeams when the sides swap).
@@ -168,15 +175,19 @@ export function spawnBots(scene) {
     state.bots.push(bot);
     return bot;
   };
-  // Friendly #0 is replaced by the player; two friendlies take attacker spawns 1 and 2.
+  // Friendly #0 is replaced by the player; the remaining corners go to the bots, with the
+  // player's corner (index 1) reserved.
   const spawns = worldRef.spawns;
+  const placed = { 0: 0, 1: 0 };
   for (let i = 0; i < 2; i += 1) {
     const bot = spawn(TEAM.PLAYER, i);
-    bot.position.copy(spawns.attackers[i + 1].position);
+    teamSpawnPoint(spawns.attackers, placed[TEAM.PLAYER], bot.position);
+    placed[TEAM.PLAYER] += 1;
   }
   for (let i = 0; i < 3; i += 1) {
     const bot = spawn(TEAM.ENEMY, i);
-    bot.position.copy(spawns.defenders[i].position);
+    teamSpawnPoint(spawns.defenders, placed[TEAM.ENEMY], bot.position);
+    placed[TEAM.ENEMY] += 1;
   }
 }
 
@@ -375,6 +386,14 @@ function objectiveFor(bot) {
   if (bomb.state === 'planted' && bot.team === 1) {
     return { x: bomb.x, z: bomb.z, range: 2.5 };
   }
+  if (bot.team === 1 && state.round.phase === 'live'
+    && (bomb.state === 'carried' || bomb.state === 'dropped')) {
+    // Hunt the carrier / camp the dropped bomb BEFORE it goes down, not only after.
+    const pos = bomb.state === 'dropped' ? bomb
+      : bomb.carrier === 'player' ? state.player.position
+      : (typeof bomb.carrier === 'number' ? state.bots[bomb.carrier]?.position : null);
+    if (pos) return { x: pos.x, z: pos.z, range: 2.5 };
+  }
   if (bomb.state === 'dropped' && bot.team === 0) {
     return { x: bomb.x, z: bomb.z, range: 1.0 };
   }
@@ -447,6 +466,10 @@ function stepBodies(dt) {
 // state.stats. Returns true when this hit kills.
 export function damageBot(bot, dmg, part, byPlayer) {
   if (!bot || !bot.alive) return false;
+  // Damage is inert outside the fighting phases: FREEZE, ROUND_END and MATCH_END never
+  // move health (rounds.js owns the phase clock).
+  const phase = state.round.phase;
+  if (phase !== 'live' && phase !== 'planted') return false;
   const amount = dmg; // weapons.js already sends the per-part value (damageHead vs damageBody)
   bot.health -= amount;
   // Any damage interrupts an in-progress plant/defuse (rounds.js rebuilds progress).
@@ -483,7 +506,7 @@ export function respawnBots() {
     bot.goalRange = 0;
     if (!spawns) continue;
     const list = bot.team === TEAM.PLAYER ? spawns.attackers : spawns.defenders;
-    bot.position.copy(list[taken[bot.team] % list.length].position);
+    teamSpawnPoint(list, taken[bot.team], bot.position); // corner 1 stays the player's
     taken[bot.team] += 1;
   }
 }
@@ -492,3 +515,6 @@ export function respawnBots() {
 export function botCenter(bot, out) {
   return out.set(bot.position.x, bot.position.y + 1.0, bot.position.z);
 }
+
+// Route-graph read access for the scripted shot player (same graph, same hop table).
+export { NODES, NEXT_HOP, nearestNode };

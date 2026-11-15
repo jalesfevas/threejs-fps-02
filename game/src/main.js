@@ -13,6 +13,7 @@ import { createPlayer, respawnPlayer, damagePlayer } from './player.js';
 import { createWeapons } from './weapons.js';
 import { createGrenades } from './grenade.js';
 import { initBots, spawnBots, updateBots, damageBot, botCenter, respawnBots } from './bots.js';
+import { initShotPlayer, updateShotPlayer } from './shotplayer.js';
 import { initRounds, updateRounds } from './rounds.js';
 import { initBombs, updateBombs } from './bombs.js';
 import { initEconomy, createBuyMenu, canOpen, award } from './economy.js';
@@ -83,9 +84,14 @@ const roundDeps = {
   },
   onMatchEnd() {
     cleared = true;
+    // Free the cursor so the "Play again" button is clickable; the button's handler
+    // (hud.onPlay) restarts and re-locks.
+    document.exitPointerLock();
   },
 };
 initRounds(roundDeps);
+// The shot pipeline's scripted player driver: never active in a real session.
+if (shot) initShotPlayer(world);
 
 const body = player.state;
 const halfFovTan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
@@ -194,6 +200,7 @@ function aimAt(point) {
 function step(dt) {
   state.time += dt;
   updateRounds(dt);
+  if (shot) updateShotPlayer(dt); // scripted driver feeds the input snapshot pre-step
   player.step(dt);
   weapons.step(dt);
   grenades.step(dt);
@@ -253,82 +260,82 @@ function settle(steps) {
   for (let index = 0; index < steps; index += 1) step(SIM_DT);
 }
 
-// Shot captures are frozen frames, so the frame loop never fills the round HUD. Push a
-// plausible mid-match state by hand before the capture paints — deterministic constants,
-// no clocks, no randomness.
-function pushShotHud(round, score, timer, money) {
-  state.round.number = round;
-  state.round.score = [...score];
-  state.round.timer = timer;
-  state.economy.money = money;
-  hud.setRound(round, state.round.score);
-  hud.setRoundTimer(timer);
-  hud.setMoney(money);
+// Shot captures are frozen frames, so the frame loop never fills the round HUD. Instead of
+// hand-pushed constants, the capture stages run the REAL simulation forward first — bots
+// live, a player stand-in aiming and firing through the seeded RNG, the real round flow in
+// updateRounds — and the HUD then reads whatever actually happened (round, score, timer,
+// money, health). Nothing here invents a number.
+function syncShotHud() {
+  hud.setRound(state.round.number, state.round.score);
+  hud.setRoundTimer(state.round.timer);
+  hud.setMoney(state.economy.money);
   hud.setHealth(state.player.health, state.player.kevlar);
+  hud.setSpectate(!body.alive && state.round.phase !== 'match_end');
+  if (state.round.phase === 'match_end') hud.showMatchEnd(state.round.score);
 }
 
-// The shot targets: living enemies of the player, nearest first, resolved once at setup so
-// the capture stays deterministic. pointOf re-reads the live position each shot.
-function shotTargets() {
-  const px = body.position.x;
-  const pz = body.position.z;
-  return state.bots
-    .filter((bot) => bot.team === 1 && bot.alive)
-    .sort((a, b) => (
-      Math.hypot(a.position.x - px, a.position.z - pz)
-      - Math.hypot(b.position.x - px, b.position.z - pz)
-    ));
+// Player stand-in: every call, aim at the nearest living enemy and squeeze the trigger with
+// a small cone (weapons consume the seeded random, so a seed reproduces the whole run).
+function playerFire() {
+  if (!body.alive) return;
+  const phase = state.round.phase;
+  if (phase !== 'live' && phase !== 'planted') return;
+  let target = null;
+  let bestDist = Infinity;
+  for (const bot of state.bots) {
+    if (bot.team !== 1 || !bot.alive) continue;
+    const d = Math.hypot(bot.position.x - body.position.x, bot.position.z - body.position.z);
+    if (d < bestDist) { bestDist = d; target = bot; }
+  }
+  if (!target) return;
+  aimAt({ x: target.position.x, y: target.position.y + 1.35, z: target.position.z });
+  weapons.tryFire(0.004);
+}
+
+// Drive the real fixed-step simulation. fastForwardAfter (the 'end' stage) compresses the
+// non-fighting phases and, past that point, lets stalled rounds resolve through the real
+// time-out path inside updateRounds — MATCH_END arrives via the normal round flow, never
+// by forcing state. caps keep a capture well under a minute of wall clock.
+function simulate(capSeconds, fastForwardAfter) {
+  const maxSteps = Math.round(capSeconds / SIM_DT);
+  const ffStep = fastForwardAfter == null ? Infinity : Math.round(fastForwardAfter / SIM_DT);
+  for (let s = 0; s < maxSteps && state.round.phase !== 'match_end'; s += 1) {
+    if (s >= ffStep) {
+      state.round.timer = Math.min(state.round.timer,
+        state.round.phase === 'live' || state.round.phase === 'planted' ? 1 : 0.2);
+    }
+    if (s % 45 === 0) playerFire(); // ≈ every 0.75 s of sim time
+    step(SIM_DT);
+  }
+  if (fastForwardAfter == null) return;
+  for (let s = 0; s < 2400 && state.round.phase !== 'match_end'; s += 1) {
+    state.round.timer = Math.min(state.round.timer, 0.1);
+    step(SIM_DT);
+  }
 }
 
 function runShot(name) {
   hud.hideOverlay();
   body.pitch = 0;
   body.yaw = 0;
-  if (name === 'play' || name === 'end') {
-    body.position.set(0, 0, -5);
-    settle(12);
-    const targets = shotTargets();
-    const pointOf = (bot) => ({ x: bot.position.x, y: bot.position.y + 1.53, z: bot.position.z });
-    if (name === 'play') {
-      // One burst at the nearest enemy: tracked live while it lives, corpse afterwards.
-      const target = targets[0] ?? null;
-      for (let round = 0; round < 3; round += 1) {
-        aimAt(target ? pointOf(target) : { x: 0, y: 1.5, z: -6 });
-        weapons.tryFire(0);
-        if (round < 2) settle(8);
-      }
-      settle(12);
-      aimAt(target ? pointOf(target) : { x: 0, y: 1.5, z: -6 });
-      weapons.tryFire(0);
-      settle(1);
-    } else {
-      // Three rounds per target, dropping a target the moment it falls.
-      for (const target of targets) {
-        for (let round = 0; round < 3 && target.alive; round += 1) {
-          aimAt(pointOf(target));
-          weapons.tryFire(0);
-          settle(8);
-        }
-      }
-      settle(12);
-    }
+  if (name === 'play') {
+    // ~90 s of the real match: the HUD shows a genuine mid-match state.
+    simulate(90, null);
+    playerFire(); // one aimed look for the capture frame
+  } else if (name === 'end') {
+    // Fight for a while, then fast-forward the rest through the real flow so the overlay
+    // carries the true final score of a completed match.
+    simulate(240, 150);
   } else {
-    body.position.set(0.6, 0, 8.6);
+    // start: the genuine round-1 freeze, a third of a second in.
     settle(20);
     aimAt(new THREE.Vector3(0, 1.5, -6));
     hud.showOverlay('start', 0);
-    pushShotHud(1, [0, 0], 5, 800); // freeze-time of round 1
-  }
-  if (name === 'play') {
-    pushShotHud(3, [2, 1], 47, 3400); // mid round 3
-  } else if (name === 'end') {
-    // Full time: 3 - 2 after five rounds, match-over overlay with the result headline.
-    pushShotHud(5, [3, 2], 0, 6650);
-    state.round.phase = 'match_end';
-    hud.showMatchEnd(state.round.score);
   }
   hud.setScore(state.score);
   hud.setAmmo(weapons.activeSlot().mag, weapons.activeSlot().reserve);
+  hud.setGrenades(state.grenades.count);
+  syncShotHud();
   paintTwiceThenReady();
 }
 

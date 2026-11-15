@@ -160,9 +160,6 @@ export function createPlayer(colliders, shootables) {
     look,
     recoil,
     hitRoot,
-    groundSpeed() {
-      return Math.hypot(player.velocity.x, player.velocity.z);
-    },
   };
 }
 
@@ -171,6 +168,10 @@ export function createPlayer(colliders, shootables) {
 export function damagePlayer(dmg, part) {
   const player = state.player;
   if (!player.alive) return false;
+  // Damage is inert outside the fighting phases: FREEZE, ROUND_END and MATCH_END never
+  // move health (rounds.js owns the phase clock).
+  const phase = state.round.phase;
+  if (phase !== 'live' && phase !== 'planted') return false;
   const amount = part === 'head' ? dmg : (player.kevlar ? dmg * 0.5 : dmg);
   player.health -= amount;
   // Any damage interrupts an in-progress plant/defuse (rounds.js rebuilds progress).

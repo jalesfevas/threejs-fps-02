@@ -49,7 +49,9 @@ function startRound() {
   state.round.playerTeam = playerTeam;
   applyTeams(playerTeam);
   const spawns = deps_.world.spawns;
-  deps_.respawnPlayer(playerTeam === 0 ? spawns.attackers[0].position : spawns.defenders[0].position);
+  // The player owns corner index 1 of their side; bots take the remaining corners
+  // (bots.js skips index 1), so nobody spawns inside anyone.
+  deps_.respawnPlayer(playerTeam === 0 ? spawns.attackers[1].position : spawns.defenders[1].position);
   deps_.respawnBots();
   // Loadout carry-over: kevlar cleared unless bought this round; ammo refilled to full
   // magazines; a player on the losing side who died is reset to the pistol and loses
@@ -68,8 +70,12 @@ function startRound() {
     state.weapon.slot = 2;
   }
   state.round.bomb.state = 'carried';
-  // The bomb starts with an attacker: the player in their half, else the first attacker bot.
-  state.round.bomb.carrier = playerTeam === 0 ? 'player' : 2;
+  // The bomb belongs to the ATTACKER TEAM, not to the player: it starts with the first
+  // living attacker bot so the objective advances even when the player never moves. The
+  // player takes it only by picking it up after a drop (updatePickup gives them priority)
+  // and can still plant with E while carrying.
+  const firstAttacker = state.bots.find((bot) => bot.team === 0 && bot.alive);
+  state.round.bomb.carrier = firstAttacker ? firstAttacker.slot : 'player';
   state.round.bomb.site = null;
   state.round.bomb.progress = 0;
   deps_.hud.setBanner('');

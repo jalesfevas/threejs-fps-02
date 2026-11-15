@@ -17,7 +17,7 @@ export const WEAPONS = [
 for (const weapon of WEAPONS) weapon.fireGap = 60 / weapon.rpm;
 
 const MOVE_REFERENCE = 5.2; // walk speed: full movement spread at this ground speed
-const FLASH_TIME = 0.06;
+const FLASH_TIME = 1 / 30; // two sim frames: a flick, never an overlay
 const RECOIL_RESET = 0.35; // seconds without a shot before the recoil pattern restarts
 const SWITCH_TIME = 0.4;
 const TRACER_COUNT = 10;
@@ -115,9 +115,14 @@ export function createWeapons(camera, scene, opts) {
     camera.add(models[i]);
   }
 
+  // Muzzle flash: a tiny additive flick parked down-right of the barrel tip so it never
+  // covers the crosshair or a target (0.05 m plane, ≤1.2× scale, 0.45 opacity).
   const flash = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.24, 0.24),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(PALETTE.accent), transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide }),
+    new THREE.PlaneGeometry(0.05, 0.05),
+    new THREE.MeshBasicMaterial({
+      color: new THREE.Color(PALETTE.accent), transparent: true, opacity: 0.45,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    }),
   );
   flash.visible = false;
   camera.add(flash);
@@ -275,12 +280,18 @@ export function createWeapons(camera, scene, opts) {
     }
 
     flash.visible = weapon.flash > 0;
-    flash.position.set(rec.muzzle[0] * VM_SCALE, rec.muzzle[1] * VM_SCALE, rec.muzzle[2] * VM_SCALE);
+    // Down-right of the barrel tip: barrel offset plus a nudge so the flick sits clear of
+    // the aim line even at full kick.
+    flash.position.set(
+      rec.muzzle[0] * VM_SCALE + 0.03,
+      rec.muzzle[1] * VM_SCALE - 0.04,
+      rec.muzzle[2] * VM_SCALE,
+    );
     flash.rotation.z = weapon.flash * 30;
-    const flashScale = 0.7 + (weapon.flash / FLASH_TIME) * 0.5;
+    const flashScale = 0.7 + (weapon.flash / FLASH_TIME) * 0.5; // ≤1.2× of 0.05 m
     flash.scale.set(flashScale, flashScale, 1);
     flashLight.position.set(rec.muzzle[0] * 0.7, rec.muzzle[1] * 0.7, rec.muzzle[2] * 0.7);
-    flashLight.intensity = weapon.flash > 0 ? 18 : 0;
+    flashLight.intensity = weapon.flash > 0 ? 6 : 0;
 
     // Puff particles: integrate, then park the dead ones below the floor.
     const positions = puff.geometry.attributes.position.array;
