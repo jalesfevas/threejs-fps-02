@@ -152,8 +152,10 @@ export function createWorld(scene) {
   }
   const crateVariants = tintVariants('crate', [-0.05, 0, 0.05]);
   const brickVariants = tintVariants('brick', [-0.05, 0.02, 0.06]);
+  const slateVariants = tintVariants('slate', [-0.04, 0, 0.05]);
   let crateVariantIndex = 0;
   let brickVariantIndex = 0;
+  let slateVariantIndex = 0;
 
   // `material` may be a palette name or an already-built material (e.g. platformTile).
   function box(width, height, depth, x, y, z, materialName) {
@@ -164,6 +166,9 @@ export function createWorld(scene) {
     } else if (materialName === 'brick') {
       material = brickVariants[brickVariantIndex % brickVariants.length];
       brickVariantIndex += 1;
+    } else if (materialName === 'slate') {
+      material = slateVariants[slateVariantIndex % slateVariants.length];
+      slateVariantIndex += 1;
     }
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
     mesh.position.set(x, y, z);
@@ -230,14 +235,15 @@ export function createWorld(scene) {
   box(3, 0.4, 1.0, 0, 0.2, 4.9, 'slate');
 
   // Round-4: dark scuff strips along the wall bases — flat decor quads, no collider and no
-  // shootable entry (the walls behind them already stop bullets and feet).
-  const stripMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color('#2e2622'), roughness: 0.95, metalness: 0.03, transparent: true, opacity: 0.5,
-  });
+  // shootable entry (the walls behind them already stop bullets and feet). S9: slate canvas
+  // material with tint variants instead of one flat colour.
+  let stripVariantIndex = 0;
   for (const [width, depth, sx, sz] of [
     [26, 0.8, -8, -19.5], [14, 0.6, 18, -19.6], [22, 0.7, -6, 19.5], [12, 0.6, -21, 19.6],
     [0.7, 20, -29.5, 2], [0.6, 14, 29.6, 10], [0.7, 16, 29.5, -8],
   ]) {
+    const stripMaterial = slateVariants[stripVariantIndex % slateVariants.length];
+    stripVariantIndex += 1;
     const strip = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), stripMaterial);
     strip.rotation.x = -Math.PI / 2;
     strip.position.set(sx, 0.015, sz);
@@ -245,9 +251,17 @@ export function createWorld(scene) {
     group.add(strip);
   }
 
-  // Courtyard cover: two low walls to fight over.
-  box(3, 1.1, 1.2, -6, 0.55, 8, 'hairline');
-  box(3, 1.1, 1.2, 6, 0.55, -8, 'hairline');
+  // Courtyard cover: two low walls to fight over. S9: brick canvas material with tint
+  // variants, plus a darker 0.1 m trim strip along each base (decor only — no collider).
+  box(3, 1.1, 1.2, -6, 0.55, 8, 'brick');
+  box(3, 1.1, 1.2, 6, 0.55, -8, 'brick');
+  for (const [cx, cz] of [[-6, 8], [6, -8]]) {
+    const trim = new THREE.Mesh(new THREE.BoxGeometry(3.04, 0.1, 1.24), materials.hairline);
+    trim.position.set(cx, 0.05, cz);
+    trim.castShadow = true;
+    trim.receiveShadow = true;
+    group.add(trim);
+  }
 
   // Dock Lane (east): a low dock platform carrying site B, crates stacked around it.
   box(6, 0.8, 10, 25, 0.4, -8, 'slate');
