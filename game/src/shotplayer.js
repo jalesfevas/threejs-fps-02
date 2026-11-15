@@ -9,6 +9,9 @@ const STUCK_STEPS = 30; // ~0.5 s of barely moving triggers a side-step
 const DEFUSE_RANGE = 3.5; // safely inside rounds.js's 4 m defuse radius
 
 let sites = null;
+let shotName = '';
+let vantage = -1; // route node the 'play' shot holds, with a clear line onto a patrolled lane
+let vantageLane = -1; // the lane node it watches (the hold faces this way)
 let assignedSite = null;
 let assignedRound = -1;
 let lastX = 0;
@@ -17,8 +20,9 @@ let stuckSteps = 0;
 let strafeHold = 0;
 let side = 0;
 
-export function initShotPlayer(world) {
+export function initShotPlayer(world, name) {
   sites = world.sites;
+  shotName = name || '';
 }
 
 // Nearest site zone to where the player currently stands, remembered for the round.
@@ -79,9 +83,57 @@ export function updateShotPlayer(dt) { // dt unused: keyed movement is impulse-b
     walkToward(player, keys, site.center.x, site.center.z);
     return;
   }
-  // Bomb on a teammate bot (escort it) or on the ground (pick it up): go to the bomb.
-  keys.delete('KeyE');
-  walkToward(player, keys, bomb.x, bomb.z);
+  // Bomb on a teammate bot (escort it) or on the ground (pick it up): go to the bomb —
+  // except in the 'play' capture, where framing beats fetching: hold a lane vantage
+  // with line-of-sight onto a patrolled route instead (the plant goal above still wins
+  // whenever the player carries the bomb).
+  if (shotName !== 'play') {
+    keys.delete('KeyE');
+    walkToward(player, keys, bomb.x, bomb.z);
+    return;
+  }
+  engageFromVantage(player, keys);
+}
+
+// Every node any team's patrol touches (sides swap at the half, so both lists count).
+const PATROL_NODES = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+const VANTAGE_RANGE = 24; // a hair under the bots' 25 m gunshot-hear range
+
+// Nearest route node with a clear ≤VANTAGE_RANGE line onto a patrolled lane; the lane
+// node it watches is remembered so the hold faces the right way. Static node data plus
+// the seeded world make this deterministic — computed once, first live tick.
+function pickVantage(px, pz) {
+  let bestDist = Infinity;
+  for (let i = 0; i < NODES.length; i += 1) {
+    for (const lane of PATROL_NODES) {
+      if (lane === i) continue;
+      const d = Math.hypot(NODES[i].x - NODES[lane].x, NODES[i].z - NODES[lane].z);
+      if (d > VANTAGE_RANGE) continue;
+      if (!lineClear(NODES[i].x, NODES[i].z, NODES[lane].x, NODES[lane].z)) continue;
+      const pd = Math.hypot(NODES[i].x - px, NODES[i].z - pz);
+      if (pd < bestDist) { bestDist = pd; vantage = i; vantageLane = lane; }
+    }
+  }
+}
+
+// Walk to the vantage, then hold: stop, face the watched lane. The trigger itself stays
+// in main.js's playerFire, which now only squeezes while an enemy is actually visible.
+function engageFromVantage(player, keys) {
+  if (vantage < 0) pickVantage(player.position.x, player.position.z);
+  if (vantage < 0) {
+    keys.delete('KeyE');
+    walkToward(player, keys, state.round.bomb.x, state.round.bomb.z);
+    return;
+  }
+  const vx = NODES[vantage].x;
+  const vz = NODES[vantage].z;
+  if (Math.hypot(vx - player.position.x, vz - player.position.z) > ARRIVE) {
+    keys.delete('KeyE');
+    walkToward(player, keys, vx, vz);
+    return;
+  }
+  releaseKeys();
+  player.yaw = Math.atan2(-(NODES[vantageLane].x - vx), -(NODES[vantageLane].z - vz));
 }
 
 // Face and walk toward (gx, gz). Straight lines only when they actually clear the world;

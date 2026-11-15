@@ -210,7 +210,8 @@ export function spawnBots(scene) {
 }
 
 // --- Bot senses and movement constants ------------------------------------------------------
-const VISION_RANGE = 40;
+const VISION_RANGE = 22; // was 40: at 40 m every bot saw every spawn across the long lanes
+// and pinned in engage from tick one — escorts never screened, duels never resolved.
 const VISION_HALF_COS = Math.cos(THREE.MathUtils.degToRad(35));
 const GUNSHOT_HEAR_RANGE = 25;
 const AIM_ERROR_START = 0.09;
@@ -251,9 +252,13 @@ function acquireTarget(bot) {
   let bestDist = Infinity;
   temps.b.set(bot.position.x, 1.5, bot.position.z); // bot eye
   let count = 0;
-  candidates[0].point = playerPoint(candidatePoints[0]);
-  candidates[0].pos = state.player.position;
-  count = 1;
+  // The PLAYER is a candidate only for opposing bots — without this team guard the
+  // friendly escorts acquire the carrier as a target and shoot him in the back.
+  if (bot.team !== state.player.team) {
+    candidates[0].point = playerPoint(candidatePoints[0]);
+    candidates[0].pos = state.player.position;
+    count = 1;
+  }
   for (const other of state.bots) {
     if (other === bot || !other.alive || other.team === bot.team) continue;
     const slot = candidates[count] ?? (candidates[count] = { point: null, isPlayer: false, pos: null, bot: null });
@@ -565,7 +570,6 @@ export function damageBot(bot, dmg, part, byPlayer) {
   }
   if (bot.health > 0) return false;
   bot.alive = false;
-  if (window.__pfLog) window.__pfLog.push(`  KILL t=${state.time.toFixed(1)} bot=${bot.index} byPlayer=${byPlayer} part=${part}`);
   bot.fall = 0;
   bot.mode = 'patrol';
   if (byPlayer) state.stats.kills += 1;

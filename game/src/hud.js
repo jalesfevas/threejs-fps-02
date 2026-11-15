@@ -243,11 +243,14 @@ export function createHud() {
         armorTag.hidden = !kevlar;
       }
     },
-    showMatchEnd(score) {
-      this.showOverlay('end', score[0]);
-      // Result in the headline and the real line in the copy: player team is score[0].
-      title.textContent = score[0] > score[1] ? 'VICTORY' : 'DEFEAT';
-      copy.textContent = `Final score ${score[0]} - ${score[1]}.`;
+    showMatchEnd(score, playerTeam = 0) {
+      // score is [attackers, defenders]; the player's team is attackers only in the first
+      // half — pass state.round.playerTeam so the verdict follows the side actually played.
+      const ours = score[playerTeam];
+      const theirs = score[1 - playerTeam];
+      this.showOverlay('end', ours);
+      title.textContent = ours > theirs ? 'VICTORY' : 'DEFEAT';
+      copy.textContent = `Final score ${ours} - ${theirs}.`;
       banner.hidden = true;
     },
   };

@@ -12,7 +12,7 @@ import { createInput } from './input.js';
 import { createPlayer, respawnPlayer, damagePlayer } from './player.js';
 import { createWeapons } from './weapons.js';
 import { createGrenades } from './grenade.js';
-import { initBots, spawnBots, updateBots, damageBot, botCenter, respawnBots } from './bots.js';
+import { initBots, spawnBots, updateBots, damageBot, botCenter, respawnBots, lineClear } from './bots.js';
 import { initShotPlayer, updateShotPlayer } from './shotplayer.js';
 import { initRounds, updateRounds } from './rounds.js';
 import { initBombs, updateBombs } from './bombs.js';
@@ -96,10 +96,9 @@ const roundDeps = {
 };
 initRounds(roundDeps);
 // The shot pipeline's scripted player driver: never active in a real session.
-if (shot) initShotPlayer(world);
+if (shot) initShotPlayer(world, shot);
 
 const body = player.state;
-window.__state = state; // TEMP diagnostic
 const halfFovTan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
 const blastCenter = new THREE.Vector3();
 
@@ -205,7 +204,6 @@ function aimAt(point) {
 
 function step(dt) {
   state.time += dt;
-  if (shot && state.time % 2 < dt) (window.__trace ??= []).push({t: +state.time.toFixed(1), r: state.round.number, hp: state.player.health, x: +body.position.x.toFixed(1), z: +body.position.z.toFixed(1), b: state.round.bomb.state, bots: state.bots.map((b) => [b.team, b.alive ? 1 : 0, b.mode[0], +b.position.x.toFixed(0), +b.position.z.toFixed(0), Math.round(b.health)])});
   updateRounds(dt);
   if (shot) updateShotPlayer(dt); // scripted driver feeds the input snapshot pre-step
   player.step(dt);
@@ -278,15 +276,11 @@ function syncShotHud() {
   hud.setMoney(state.economy.money);
   hud.setHealth(state.player.health, state.player.kevlar);
   hud.setSpectate(!body.alive && state.round.phase !== 'match_end');
-  if (state.round.phase === 'match_end') hud.showMatchEnd(state.round.score);
+  if (state.round.phase === 'match_end') hud.showMatchEnd(state.round.score, state.round.playerTeam);
 }
 
-// Player stand-in: every call, aim at the nearest living enemy and squeeze the trigger with
-// a small cone (weapons consume the seeded random, so a seed reproduces the whole run).
-function playerFire() {
-  if (!body.alive) return;
-  const phase = state.round.phase;
-  if (phase !== 'live' && phase !== 'planted') return;
+// Nearest living enemy (any distance) — the old playerFire pick.
+function nearestEnemy() {
   let target = null;
   let bestDist = Infinity;
   for (const bot of state.bots) {
@@ -294,13 +288,36 @@ function playerFire() {
     const d = Math.hypot(bot.position.x - body.position.x, bot.position.z - body.position.z);
     if (d < bestDist) { bestDist = d; target = bot; }
   }
-  if (!target) return;
-  aimAt({ x: target.position.x, y: target.position.y + 1.35, z: target.position.z });
-  const fired = weapons.tryFire(0.004);
-  if (shot) {
-    window.__pf = (window.__pf ?? 0) + (fired ? 1 : 0);
-    if (fired) (window.__pfLog ??= []).push(`t=${state.time.toFixed(1)} tgt=${target.index} d=${bestDist.toFixed(1)} tgtHp=${Math.round(target.health)} cam=(${camera.position.x.toFixed(1)},${camera.position.y.toFixed(1)},${camera.position.z.toFixed(1)}) yaw=${body.yaw.toFixed(2)} pitch=${body.pitch.toFixed(2)}`);
+  return target;
+}
+
+// Nearest living enemy the player can actually see: ≤25 m with a clear line. Drives both
+// the scripted player's fire (engage only while visible) and the 'play' frame composition.
+function nearestVisibleEnemy() {
+  let target = null;
+  let bestDist = Infinity;
+  for (const bot of state.bots) {
+    if (bot.team !== 1 || !bot.alive) continue;
+    const d = Math.hypot(bot.position.x - body.position.x, bot.position.z - body.position.z);
+    if (d > 25 || d >= bestDist) continue;
+    if (!lineClear(body.position.x, body.position.z, bot.position.x, bot.position.z)) continue;
+    bestDist = d;
+    target = bot;
   }
+  return target;
+}
+
+// Player stand-in: every call, aim at the nearest visible enemy (nearest at all when
+// nobody is in view) and squeeze the trigger with a small cone (weapons consume the
+// seeded random, so a seed reproduces the whole run).
+function playerFire() {
+  if (!body.alive) return;
+  const phase = state.round.phase;
+  if (phase !== 'live' && phase !== 'planted') return;
+  const target = nearestVisibleEnemy() ?? nearestEnemy();
+  if (!target) return;
+  aimAt({ x: target.position.x, y: target.position.y + 1.53, z: target.position.z }); // head level
+  weapons.tryFire(0.004);
 }
 
 // Drive the real fixed-step simulation. fastForwardAfter (the 'end' stage) compresses the
@@ -325,14 +342,32 @@ function simulate(capSeconds, fastForwardAfter) {
   }
 }
 
+// Recompose the 'play' frame after the sim: a crosshair on a blank wall is a dead shot.
+// Aim at the nearest VISIBLE enemy (≤25 m, clear line), offset laterally ~18% of the
+// target distance so the bot sits a third off-centre and the viewmodel stays small.
+// Runs once, post-sim, pre-paint — never inside the frame loop. Falls back to the
+// playerFire look when no enemy is in view.
+const framePoint = new THREE.Vector3();
+function framePlayfight() {
+  const target = nearestVisibleEnemy();
+  if (!target) return;
+  const dx = target.position.x - body.position.x;
+  const dz = target.position.z - body.position.z;
+  framePoint.set(target.position.x - dz * 0.18, target.position.y + 1.2, target.position.z + dx * 0.18);
+  aimAt(framePoint);
+}
+
 function runShot(name) {
   hud.hideOverlay();
   body.pitch = 0;
   body.yaw = 0;
   if (name === 'play') {
-    // ~90 s of the real match: the HUD shows a genuine mid-match state.
+    // ~90 s of the real match: the HUD shows a genuine mid-match state. playerFire leaves
+    // a live muzzle flash on the final trigger pull; framePlayfight then re-aims the
+    // camera at the nearest visible enemy (offset off-centre) before the capture paints.
     simulate(90, null);
     playerFire(); // one aimed look for the capture frame
+    framePlayfight();
   } else if (name === 'end') {
     // Fight for a while, then fast-forward the rest through the real flow so the overlay
     // carries the true final score of a completed match.

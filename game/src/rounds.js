@@ -109,7 +109,7 @@ export function updateRounds(dt) {
       if (state.round.score[0] >= WIN_SCORE || state.round.score[1] >= WIN_SCORE) {
         state.round.phase = 'match_end';
         state.round.timer = 0;
-        deps_.hud.showMatchEnd(state.round.score);
+        deps_.hud.showMatchEnd(state.round.score, state.round.playerTeam);
         deps_.onMatchEnd?.();
       } else {
         startRound();
@@ -234,7 +234,6 @@ function endRound(winner, banner) {
   state.round.timer = ROUND_END_TIME;
   state.round.score[winner] += 1;
   state.round.banner = banner;
-  (window.__roundLog ??= []).push(`R${state.round.number}: ${banner} (${state.round.score[0]}-${state.round.score[1]}) playerAlive=${state.player.alive} bomb=${state.round.bomb.state}`);
   state.round.lastWinner = winner;
   state.round.playerSurvived = state.player.alive;
   deps_.hud.setBanner(banner);
@@ -300,7 +299,6 @@ function plantNow(site, x, y, z) {
   bomb.timer = BOMB_TIME;
   bomb.progress = 0;
   state.round.phase = 'planted';
-  (window.__roundLog ??= []).push(`  planted ${site.name} at (${x.toFixed(1)}, ${z.toFixed(1)}) carrier=${typeof bomb.carrier === 'number' ? 'bot' + bomb.carrier : bomb.carrier}`);
   state.round.timer = BOMB_TIME; // round clock is now the bomb clock
   deps_.hud.setProgress(-1, '');
   deps_.hud.setBanner('Bomb planted');
