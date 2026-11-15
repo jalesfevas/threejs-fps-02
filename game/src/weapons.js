@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { state } from './state.js';
 import { damagePlayer } from './player.js';
+import { gunshot, reloadClick } from './audio.js';
 
 // name, magazine, reserve, body/head damage, rounds per minute, reload seconds, spread standing
 // vs moving (radians, at the 5.2 m/s walk reference), recoil per shot, viewmodel muzzle offset.
@@ -24,6 +25,8 @@ const TRACER_COUNT = 10;
 const TRACER_TIME = 0.07;
 const PUFF_COUNT = 96;
 const RANGE = 100;
+// Per-weapon gunshot pitch (Kiln-9 low, Ember snappy, Judge mid).
+const WEAPON_PITCH = [0.8, 1.35, 1.0];
 
 export function createWeapons(camera, scene, opts) {
   const applyDamage = opts.applyDamage;
@@ -65,6 +68,45 @@ export function createWeapons(camera, scene, opts) {
     tracers.push({ line, life: 0 });
   }
   state.fx.tracers = tracers;
+
+  // Muzzle smoke: pooled sprites (one material each, so opacity fades per puff) rising from
+  // the muzzle for 0.4 s. Shell casings: pooled boxes on a physics-lite arc, despawned at 1 s.
+  // Both built here once — the fire path and the step loop never allocate.
+  const SMOKE_COUNT = 8;
+  const SMOKE_TIME = 0.4;
+  const smokeCanvas = document.createElement('canvas');
+  smokeCanvas.width = smokeCanvas.height = 32;
+  const smokeCtx = smokeCanvas.getContext('2d');
+  const smokeGrad = smokeCtx.createRadialGradient(16, 16, 2, 16, 16, 16);
+  smokeGrad.addColorStop(0, 'rgba(205,196,186,0.55)');
+  smokeGrad.addColorStop(1, 'rgba(205,196,186,0)');
+  smokeCtx.fillStyle = smokeGrad;
+  smokeCtx.fillRect(0, 0, 32, 32);
+  const smokeTexture = new THREE.CanvasTexture(smokeCanvas);
+  const smokes = [];
+  for (let i = 0; i < SMOKE_COUNT; i += 1) {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: smokeTexture, transparent: true, opacity: 0, depthWrite: false,
+    }));
+    sprite.visible = false;
+    scene.add(sprite);
+    smokes.push({ sprite, life: 0, vx: 0, vy: 0, vz: 0 });
+  }
+  let smokeCursor = 0;
+
+  const SHELL_COUNT = 6;
+  const SHELL_TIME = 1;
+  const shells = [];
+  const shellGeometry = new THREE.BoxGeometry(0.02, 0.02, 0.05);
+  const shellMaterial = new THREE.MeshStandardMaterial({ color: 0xc9a227, metalness: 0.7, roughness: 0.35 });
+  for (let i = 0; i < SHELL_COUNT; i += 1) {
+    const mesh = new THREE.Mesh(shellGeometry, shellMaterial);
+    mesh.visible = false;
+    scene.add(mesh);
+    shells.push({ mesh, life: 0, vel: new THREE.Vector3() });
+  }
+  let shellCursor = 0;
+  const ejectLocal = new THREE.Vector3();
 
   // --- Viewmodels: own low-poly boxes and cylinders, one group per weapon ------------------
   const dark = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.hairline), roughness: 0.7, metalness: 0.2 });
@@ -148,6 +190,7 @@ export function createWeapons(camera, scene, opts) {
     const slot = weapon.slots[weapon.slot];
     if (weapon.switchLeft > 0 || slot.reloadLeft > 0 || slot.mag === rec.mag || slot.reserve === 0) return;
     slot.reloadLeft = rec.reload;
+    reloadClick();
   }
 
   function switchTo(index) {
@@ -186,6 +229,30 @@ export function createWeapons(camera, scene, opts) {
     oldest.line.visible = true;
   }
 
+  function spawnSmoke(point) {
+    const s = smokes[smokeCursor];
+    smokeCursor = (smokeCursor + 1) % SMOKE_COUNT;
+    s.sprite.position.copy(point);
+    s.life = SMOKE_TIME;
+    s.vx = (random() - 0.5) * 0.3;
+    s.vy = 0.7 + random() * 0.4;
+    s.vz = (random() - 0.5) * 0.3;
+    s.sprite.visible = true;
+    s.sprite.scale.setScalar(0.12);
+  }
+
+  function spawnShell(point) {
+    const shell = shells[shellCursor];
+    shellCursor = (shellCursor + 1) % SHELL_COUNT;
+    shell.mesh.position.copy(point);
+    shell.life = SHELL_TIME;
+    // Eject to the camera's right and up (camera-local offset transformed to world).
+    ejectLocal.set(1.4, 1.6, 0.3);
+    camera.localToWorld(ejectLocal);
+    shell.vel.copy(ejectLocal).sub(camera.position);
+    shell.mesh.visible = true;
+  }
+
   // One round: rate-of-fire gate, empty-mag auto reload, recoil pattern, hitscan, impact.
   function tryFire(spread) {
     const rec = WEAPONS[weapon.slot];
@@ -198,6 +265,7 @@ export function createWeapons(camera, scene, opts) {
     }
     slot.cooldown = rec.fireGap;
     slot.mag -= 1;
+    gunshot(WEAPON_PITCH[weapon.slot]);
     weapon.flash = FLASH_TIME;
     weapon.kick = rec.kick;
 
@@ -226,6 +294,8 @@ export function createWeapons(camera, scene, opts) {
     muzzlePoint.set(rec.muzzle[0] * VM_SCALE, rec.muzzle[1] * VM_SCALE, rec.muzzle[2] * VM_SCALE);
     camera.localToWorld(muzzlePoint);
     spawnTracer(muzzlePoint, endPoint);
+    spawnSmoke(muzzlePoint);
+    spawnShell(muzzlePoint);
     if (hit) {
       spawnPuff(hit.point, 5, 1.6);
       if (hit.object.userData.bot) {
@@ -315,6 +385,35 @@ export function createWeapons(camera, scene, opts) {
       tracer.line.material.opacity = Math.max(0, tracer.life / TRACER_TIME) * 0.7;
       tracer.line.visible = tracer.life > 0;
     }
+
+    // Muzzle smoke rises and fades over SMOKE_TIME; shells arc under gravity, bounce once
+    // on the floor and despawn at SHELL_TIME.
+    for (const s of smokes) {
+      if (s.life <= 0) continue;
+      s.life -= dt;
+      if (s.life <= 0) { s.sprite.visible = false; continue; }
+      s.sprite.position.x += s.vx * dt;
+      s.sprite.position.y += s.vy * dt;
+      s.sprite.position.z += s.vz * dt;
+      const fade = s.life / SMOKE_TIME;
+      s.sprite.material.opacity = 0.5 * fade;
+      s.sprite.scale.setScalar(0.12 + (1 - fade) * 0.25);
+    }
+    for (const shell of shells) {
+      if (shell.life <= 0) continue;
+      shell.life -= dt;
+      if (shell.life <= 0) { shell.mesh.visible = false; continue; }
+      shell.vel.y -= 12 * dt;
+      shell.mesh.position.addScaledVector(shell.vel, dt);
+      shell.mesh.rotation.x += 9 * dt;
+      shell.mesh.rotation.z += 7 * dt;
+      if (shell.mesh.position.y < 0.03) {
+        shell.mesh.position.y = 0.03;
+        shell.vel.y *= -0.3;
+        shell.vel.x *= 0.6;
+        shell.vel.z *= 0.6;
+      }
+    }
   }
 
   function refill() {
@@ -355,7 +454,10 @@ export function createWeapons(camera, scene, opts) {
           head ? rec.damageHead : rec.damageBody);
       } else if (hit.object.userData.playerHit) {
         const head = hit.object.userData.part === 'head';
-        damagePlayer(head ? rec.damageHead : rec.damageBody, head ? 'head' : 'body');
+        // Bot fire vs the player: a head hit is 55 (helmet save), not a 100 one-shot
+        // through kevlar — at the tuned 0.03 aim error, defenders would otherwise delete
+        // whoever they see in a single burst.
+        damagePlayer(head ? rec.damageHead * 0.55 : rec.damageBody, head ? 'head' : 'body');
       }
     }
   }

@@ -18,6 +18,11 @@ import { initRounds, updateRounds } from './rounds.js';
 import { initBombs, updateBombs } from './bombs.js';
 import { initEconomy, createBuyMenu, canOpen, award } from './economy.js';
 import { createHud } from './hud.js';
+import { initAudio } from './audio.js';
+
+// Autoplay policy: the context is created (and unlocked) on the first user gesture —
+// the pointer-lock click. Every audio call no-ops until then.
+window.addEventListener('pointerdown', initAudio, { once: true });
 
 const SIM_DT = 1 / 60;
 const MAX_STEPS = 5;
@@ -94,6 +99,7 @@ initRounds(roundDeps);
 if (shot) initShotPlayer(world);
 
 const body = player.state;
+window.__state = state; // TEMP diagnostic
 const halfFovTan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
 const blastCenter = new THREE.Vector3();
 
@@ -199,6 +205,7 @@ function aimAt(point) {
 
 function step(dt) {
   state.time += dt;
+  if (shot && state.time % 2 < dt) (window.__trace ??= []).push({t: +state.time.toFixed(1), r: state.round.number, hp: state.player.health, x: +body.position.x.toFixed(1), z: +body.position.z.toFixed(1), b: state.round.bomb.state, bots: state.bots.map((b) => [b.team, b.alive ? 1 : 0, b.mode[0], +b.position.x.toFixed(0), +b.position.z.toFixed(0), Math.round(b.health)])});
   updateRounds(dt);
   if (shot) updateShotPlayer(dt); // scripted driver feeds the input snapshot pre-step
   player.step(dt);
@@ -289,7 +296,11 @@ function playerFire() {
   }
   if (!target) return;
   aimAt({ x: target.position.x, y: target.position.y + 1.35, z: target.position.z });
-  weapons.tryFire(0.004);
+  const fired = weapons.tryFire(0.004);
+  if (shot) {
+    window.__pf = (window.__pf ?? 0) + (fired ? 1 : 0);
+    if (fired) (window.__pfLog ??= []).push(`t=${state.time.toFixed(1)} tgt=${target.index} d=${bestDist.toFixed(1)} tgtHp=${Math.round(target.health)} cam=(${camera.position.x.toFixed(1)},${camera.position.y.toFixed(1)},${camera.position.z.toFixed(1)}) yaw=${body.yaw.toFixed(2)} pitch=${body.pitch.toFixed(2)}`);
+  }
 }
 
 // Drive the real fixed-step simulation. fastForwardAfter (the 'end' stage) compresses the
@@ -304,7 +315,7 @@ function simulate(capSeconds, fastForwardAfter) {
       state.round.timer = Math.min(state.round.timer,
         state.round.phase === 'live' || state.round.phase === 'planted' ? 1 : 0.2);
     }
-    if (s % 45 === 0) playerFire(); // ≈ every 0.75 s of sim time
+    if (s % 15 === 0) playerFire(); // ≈ every 0.25 s of sim time
     step(SIM_DT);
   }
   if (fastForwardAfter == null) return;

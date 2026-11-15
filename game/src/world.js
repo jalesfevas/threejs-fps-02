@@ -264,21 +264,23 @@ export function createWorld(scene) {
   }
 
   // Dock Lane (east): a low dock platform carrying site B, crates stacked around it.
-  box(6, 0.8, 10, 25, 0.4, -8, 'slate');
+  // 0.4 m tall so it is a step (STEP_HEIGHT 0.45), not a wall — site B's whole zone sits
+  // on this pad, and at 0.8 m no carrier could ever climb in and plant there.
+  box(6, 0.4, 10, 25, 0.2, -8, 'slate');
   sitePad(25, -8, 5);
-  box(1.7, 1.7, 1.7, 19.6, 0.85, -8, 'crate');
-  box(1.7, 1.7, 1.7, 19.6, 2.55, -8, 'crate');
-  box(1.7, 1.7, 1.7, 19.6, 0.85, -6.1, 'crate');
+  box(1.7, 1.7, 1.7, 19.6, 0.85, -0.5, 'crate');
+  box(1.7, 1.7, 1.7, 19.6, 2.55, -0.5, 'crate');
+  box(1.7, 1.7, 1.7, 19.6, 0.85, -2.4, 'crate');
   box(1.7, 1.7, 1.7, 21.5, 0.85, -2, 'crate');
-  box(1.7, 1.7, 1.7, 14.5, 0.85, -14, 'crate');
-  box(1.7, 1.7, 1.7, 14.5, 0.85, -12.1, 'crate');
-  box(1.7, 1.7, 1.7, 14.5, 2.55, -13, 'crate');
+  box(1.7, 1.7, 1.7, 14.5, 0.85, -17.8, 'crate');
+  box(1.7, 1.7, 1.7, 14.5, 0.85, -15.9, 'crate');
+  box(1.7, 1.7, 1.7, 14.5, 2.55, -16.85, 'crate');
   box(1.7, 1.7, 1.7, 26, 0.85, 3, 'crate');
   box(1.7, 1.7, 1.7, 16, 0.85, 5, 'crate');
   box(1.7, 1.7, 1.7, 16, 0.85, 6.9, 'crate');
 
   // Kiln Lane (west): crates scattered from spawn to site A.
-  sitePad(-21, -13, 6);
+  sitePad(-14, -13, 6);
   box(1.7, 1.7, 1.7, -15.5, 0.85, -3, 'crate');
   box(1.7, 1.7, 1.7, -15.5, 0.85, -1.1, 'crate');
   box(1.7, 1.7, 1.7, -26, 0.85, -4, 'crate');
@@ -364,17 +366,20 @@ export function createWorld(scene) {
   scene.add(fill, fill.target);
 
   // Gradient dusk sky: one big inverted sphere, vertical gradient baked into a 1 x 256
-  // canvas (zenith blue-violet down to the fog-coloured horizon). fog=false so distance
-  // haze never washes the sky out.
+  // canvas — deep purple zenith falling through violet into the kiln-orange horizon band,
+  // then dusty brown below the horizon line. fog=false so distance haze never washes the
+  // sky out.
   const skyCanvas = document.createElement('canvas');
   skyCanvas.width = 1;
   skyCanvas.height = 256;
   const skyCtx = skyCanvas.getContext('2d');
   const gradient = skyCtx.createLinearGradient(0, 0, 0, 256);
-  gradient.addColorStop(0, '#2a2333');
-  gradient.addColorStop(0.42, '#b07050');
-  gradient.addColorStop(0.55, PALETTE.sky);
-  gradient.addColorStop(0.72, '#8a5a40');
+  gradient.addColorStop(0, '#251a44'); // deep purple zenith
+  gradient.addColorStop(0.3, '#4c2f5e'); // violet
+  gradient.addColorStop(0.47, '#a35447'); // dusk copper
+  gradient.addColorStop(0.56, '#e8933f'); // kiln-orange horizon band
+  gradient.addColorStop(0.64, PALETTE.sky);
+  gradient.addColorStop(0.78, '#7a523c'); // dusty below the horizon
   skyCtx.fillStyle = gradient;
   skyCtx.fillRect(0, 0, 1, 256);
   const skyTexture = new THREE.CanvasTexture(skyCanvas);
@@ -384,6 +389,23 @@ export function createWorld(scene) {
     new THREE.MeshBasicMaterial({ map: skyTexture, side: THREE.BackSide, fog: false, depthWrite: false }),
   );
   scene.add(sky);
+
+  // The low sun itself: a soft warm disc on the horizon, in the western light's direction.
+  const sunCanvas = document.createElement('canvas');
+  sunCanvas.width = sunCanvas.height = 64;
+  const sunCtx = sunCanvas.getContext('2d');
+  const sunGrad = sunCtx.createRadialGradient(32, 32, 4, 32, 32, 30);
+  sunGrad.addColorStop(0, 'rgba(255,240,205,1)');
+  sunGrad.addColorStop(0.4, 'rgba(255,196,110,0.9)');
+  sunGrad.addColorStop(1, 'rgba(255,150,60,0)');
+  sunCtx.fillStyle = sunGrad;
+  sunCtx.fillRect(0, 0, 64, 64);
+  const sunDisc = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(sunCanvas), transparent: true, depthWrite: false, fog: false,
+  }));
+  sunDisc.position.set(-100, 11, 30); // along the sun light, just above the horizon
+  sunDisc.scale.setScalar(20);
+  scene.add(sunDisc);
 
   const spawns = {
     attackers: [
@@ -399,7 +421,9 @@ export function createWorld(scene) {
   };
 
   const sites = {
-    A: { name: 'A — the Kiln', center: new THREE.Vector3(-21, 0, -13), min: new THREE.Vector3(-24, 0, -16), max: new THREE.Vector3(-18, 2, -10) },
+    // Site A sits EAST of the kiln: the old zone (-24..-18, -16..-10) was entirely inside
+    // the kiln's collision box, so no carrier could ever stand in it and plant.
+    A: { name: 'A — the Kiln', center: new THREE.Vector3(-14, 0, -13), min: new THREE.Vector3(-16.5, 0, -16), max: new THREE.Vector3(-11.5, 2, -10) },
     B: { name: 'B — the Dock', center: new THREE.Vector3(25, 0, -8), min: new THREE.Vector3(22.5, 0, -11), max: new THREE.Vector3(27.5, 2, -5) },
   };
 

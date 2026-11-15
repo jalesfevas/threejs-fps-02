@@ -2,7 +2,7 @@
 // player reads (state.input.keys: W/A/D/E) and steers state.player.yaw — walked, never
 // teleported; writes nothing the HUD reads (HUD comes from the real sim via syncShotHud).
 import { state } from './state.js';
-import { NODES, NEXT_HOP, nearestNode } from './bots.js';
+import { NODES, NEXT_HOP, ADJACENT, nearestNode, lineClear } from './bots.js';
 
 const ARRIVE = 1.2; // waypoint reached radius (matches the bots' patrol tolerance)
 const STUCK_STEPS = 30; // ~0.5 s of barely moving triggers a side-step
@@ -84,15 +84,24 @@ export function updateShotPlayer(dt) { // dt unused: keyed movement is impulse-b
   walkToward(player, keys, bomb.x, bomb.z);
 }
 
-// Face and walk toward (gx, gz) through the shared route graph using only the input
-// snapshot; yaw written directly, the pattern main.js's aimAt already uses in shot mode.
+// Face and walk toward (gx, gz). Straight lines only when they actually clear the world;
+// otherwise hop through the shared route graph — and when nearestNode snaps to the goal's
+// node from across a wall, retreat through the first clear neighbouring node instead of
+// walking into the wall forever.
 function walkToward(player, keys, gx, gz) {
-  const here = nearestNode(player.position.x, player.position.z);
+  const px = player.position.x;
+  const pz = player.position.z;
+  const here = nearestNode(px, pz);
   const there = nearestNode(gx, gz);
   let tx = gx;
   let tz = gz;
-  if (here !== there) {
-    const hop = NEXT_HOP[here][there];
+  if (!lineClear(px, pz, gx, gz)) {
+    let hop = here !== there ? NEXT_HOP[here][there] : -1;
+    if (hop < 0 || hop === here) {
+      for (const neighbour of ADJACENT[here]) {
+        if (lineClear(px, pz, NODES[neighbour].x, NODES[neighbour].z)) { hop = neighbour; break; }
+      }
+    }
     if (hop >= 0 && hop !== here) { tx = NODES[hop].x; tz = NODES[hop].z; }
   }
   player.yaw = Math.atan2(-(tx - player.position.x), -(tz - player.position.z));

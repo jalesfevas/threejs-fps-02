@@ -16,7 +16,7 @@ const NODES = [
   { name: 'defNW', x: -13, z: -17.5 }, { name: 'defMid', x: 0, z: -17.5 }, { name: 'defNE', x: 13, z: -17.5 },
   { name: 'westMouth', x: -10, z: -0.5 }, { name: 'eastMouth', x: 10, z: -0.5 },
   { name: 'courtyardS', x: 0, z: 8 }, { name: 'courtyardN', x: 0, z: -8 },
-  { name: 'siteA', x: -21, z: -13 }, { name: 'siteB', x: 25, z: -8 },
+  { name: 'siteA', x: -14, z: -13 }, { name: 'siteB', x: 25, z: -8 },
   { name: 'kilnLane', x: -18, z: 4 }, { name: 'dockLane', x: 18, z: 6 },
   { name: 'dockApproach', x: 20, z: -14 },
 ];
@@ -30,8 +30,14 @@ const EDGES = [
 ];
 // BFS once at init: for every pair, the next hop from A toward B.
 const NEXT_HOP = NODES.map(() => new Array(NODES.length).fill(-1));
+// Neighbour lists per node (for local detours when a straight line is walled off).
+const ADJACENT = NODES.map(() => []);
 
 function buildRoutes() {
+  for (const [a, b] of EDGES) {
+    ADJACENT[a].push(b);
+    ADJACENT[b].push(a);
+  }
   for (let start = 0; start < NODES.length; start += 1) {
     const prev = new Array(NODES.length).fill(-1);
     prev[start] = start;
@@ -97,9 +103,19 @@ function makeBody(scene, team) {
   const head = new THREE.Mesh(geometry.head, headMat);
   head.position.y = 1.53;
   head.castShadow = true;
-  group.add(torso, head);
+  // Limbs: shared box geometry pivoted at the top (shoulder/hip), so rotation.x swings them.
+  const armL = new THREE.Mesh(geometry.limb, headMat);
+  const armR = new THREE.Mesh(geometry.limb, headMat);
+  armL.position.set(-0.36, 1.32, 0);
+  armR.position.set(0.36, 1.32, 0);
+  const legL = new THREE.Mesh(geometry.limb, bodyMat);
+  const legR = new THREE.Mesh(geometry.limb, bodyMat);
+  legL.position.set(-0.14, 0.66, 0);
+  legR.position.set(0.14, 0.66, 0);
+  for (const limb of [armL, armR, legL, legR]) limb.castShadow = true;
+  group.add(torso, head, armL, armR, legL, legR);
   scene.add(group);
-  return { group, torso, head, headMat };
+  return { group, torso, head, headMat, armL, armR, legL, legR };
 }
 
 let sceneRef = null;
@@ -112,6 +128,8 @@ export function initBots(scene, world, fire) {
   fireShot = fire;
   geometry.torso = new THREE.CapsuleGeometry(0.26, 0.62, 4, 8);
   geometry.head = new THREE.SphereGeometry(0.155, 16, 12);
+  geometry.limb = new THREE.BoxGeometry(0.13, 0.52, 0.13);
+  geometry.limb.translate(0, -0.26, 0); // pivot at the shoulder/hip end
   buildRoutes();
 }
 
@@ -165,6 +183,7 @@ export function spawnBots(scene) {
       mode: 'patrol', holdNode: -1, holdScan: 0,
       target: null, lastSeen: new THREE.Vector3(), lastSeenAt: -99, burst: 0, fireAt: 0, aimError: 0.09,
       seesEnemy: false, goalX: 0, goalZ: 0, goalRange: 0,
+      walkPhase: 0, lastX: 0, lastZ: 0,
     };
     for (const mesh of [body.torso, body.head]) {
       mesh.userData.part = mesh === body.head ? 'head' : 'body';
@@ -302,7 +321,11 @@ export function updateBots(dt) {
       bot.mode = 'engage';
       bot.lastSeen.set(seen.pos.x, seen.pos.y, seen.pos.z);
       bot.lastSeenAt = state.time;
-      bot.aimError = Math.max(AIM_ERROR_END, bot.aimError - (AIM_ERROR_START - AIM_ERROR_END) * dt / AIM_TIME);
+      // The player's team tightens its aim 2.5x faster (1.2 s vs 3.0 s) so the escort
+      // screen wins its duels; defenders vs the scripted player keep the tuned 0.03 end
+      // error and the full 3 s ramp.
+      const aimTime = bot.team === state.round.playerTeam ? 1.2 : AIM_TIME;
+      bot.aimError = Math.max(AIM_ERROR_END, bot.aimError - (AIM_ERROR_START - AIM_ERROR_END) * dt / aimTime);
     } else {
       bot.aimError = Math.min(AIM_ERROR_START, bot.aimError + dt * 0.05);
       if (bot.mode === 'engage') {
@@ -397,8 +420,9 @@ function objectiveFor(bot) {
   if (bot.team === 1 && state.round.phase === 'live'
     && (bomb.state === 'carried' || bomb.state === 'dropped')) {
     // Hunt the carrier / camp the dropped bomb BEFORE it goes down, not only after —
-    // but only the first two defenders each tick; the rest stay on patrol.
-    if (defenderPush >= 2) return null;
+    // but only the first defender each tick (round-6 tuning: was 2, one chaser keeps the
+    // escort fight winnable); the rest stay on patrol/hold.
+    if (defenderPush >= 1) return null;
     const pos = bomb.state === 'dropped' ? bomb
       : bomb.carrier === 'player' ? state.player.position
       : (typeof bomb.carrier === 'number' ? state.bots[bomb.carrier]?.position : null);
@@ -407,6 +431,32 @@ function objectiveFor(bot) {
       objectiveResult.x = pos.x; objectiveResult.z = pos.z; objectiveResult.range = 2.5;
       return objectiveResult;
     }
+  }
+  // Escort objective: the player's team flanks AHEAD of their carrier while it walks the
+  // route — 6 m toward the carrier's nearest site, offset ±2.5 m to either side by slot,
+  // so the carrier is covered from two angles instead of trailing behind it.
+  if (bomb.state === 'carried' && bot.team === state.round.playerTeam && bot.team === 0
+    && bomb.carrier !== bot.slot && state.round.phase === 'live') {
+    const pos = bomb.carrier === 'player' ? state.player.position : state.bots[bomb.carrier]?.position;
+    if (pos) {
+      const a = worldRef.sites.A.center;
+      const b = worldRef.sites.B.center;
+      const site = Math.hypot(a.x - pos.x, a.z - pos.z) <= Math.hypot(b.x - pos.x, b.z - pos.z) ? a : b;
+      const dx = site.x - pos.x;
+      const dz = site.z - pos.z;
+      const len = Math.hypot(dx, dz) || 1;
+      const side = bot.slot === 0 ? -1 : 1;
+      objectiveResult.x = pos.x + (dx / len) * 6 - (dz / len) * 2.5 * side;
+      objectiveResult.z = pos.z + (dz / len) * 6 + (dx / len) * 2.5 * side;
+      objectiveResult.range = 1.5;
+      return objectiveResult;
+    }
+  }
+  // Post-plant: the attacker side of the player's team holds near the bomb (watching the
+  // approaches) instead of wandering back to patrol while defenders run the defuse.
+  if (bomb.state === 'planted' && bot.team === 0 && bot.team === state.round.playerTeam) {
+    objectiveResult.x = bomb.x; objectiveResult.z = bomb.z; objectiveResult.range = 6;
+    return objectiveResult;
   }
   if (bomb.state === 'dropped' && bot.team === 0) {
     objectiveResult.x = bomb.x; objectiveResult.z = bomb.z; objectiveResult.range = 1.0;
@@ -463,15 +513,34 @@ function patrolStep(bot, dt) {
 }
 
 // Sync meshes to bot state; dead bots fall over then stay down (rounds module respawns them).
+// Living bots get a walk cycle: limb swing scaled by ground speed plus a small body bob, and
+// an ENGAGE aim pose overrides the arm swing (both arms raised toward the target).
 function stepBodies(dt) {
   for (const bot of state.bots) {
     const body = bot.body;
-    body.group.position.set(bot.position.x, bot.position.y, bot.position.z);
-    body.group.rotation.y = bot.yaw;
     if (bot.alive) {
+      const moved = Math.hypot(bot.position.x - bot.lastX, bot.position.z - bot.lastZ);
+      bot.lastX = bot.position.x;
+      bot.lastZ = bot.position.z;
+      const speed = Math.min(1, moved / Math.max(dt, 1e-4) / SPEED);
+      bot.walkPhase += moved * 2.2;
+      const swing = Math.sin(bot.walkPhase) * 0.55 * speed;
+      const raise = bot.mode === 'engage' ? 1 : 0;
+      body.legL.rotation.x = swing;
+      body.legR.rotation.x = -swing;
+      body.armL.rotation.x = -swing * (1 - raise) + 1.25 * raise;
+      body.armR.rotation.x = swing * (1 - raise) + 1.25 * raise;
+      body.group.position.set(
+        bot.position.x,
+        bot.position.y + Math.abs(Math.sin(bot.walkPhase)) * 0.045 * speed,
+        bot.position.z,
+      );
+      body.group.rotation.y = bot.yaw;
       body.group.rotation.x = 0;
       continue;
     }
+    body.group.position.set(bot.position.x, bot.position.y, bot.position.z);
+    body.group.rotation.y = bot.yaw;
     bot.fall = Math.min(1, bot.fall + dt / FALL_SECONDS);
     body.group.rotation.x = -bot.fall * 1.45;
     body.group.position.y = -bot.fall * 0.08;
@@ -496,6 +565,7 @@ export function damageBot(bot, dmg, part, byPlayer) {
   }
   if (bot.health > 0) return false;
   bot.alive = false;
+  if (window.__pfLog) window.__pfLog.push(`  KILL t=${state.time.toFixed(1)} bot=${bot.index} byPlayer=${byPlayer} part=${part}`);
   bot.fall = 0;
   bot.mode = 'patrol';
   if (byPlayer) state.stats.kills += 1;
@@ -532,5 +602,16 @@ export function botCenter(bot, out) {
   return out.set(bot.position.x, bot.position.y + 1.0, bot.position.z);
 }
 
+// Line-of-sight test at eye height for callers outside the bot loop (shotplayer routing):
+// true when the straight segment (x1,z1)→(x2,z2) clears every collider. Own temps so it
+// never clashes with the per-tick bot vectors.
+const clearA = new THREE.Vector3();
+const clearB = new THREE.Vector3();
+export function lineClear(x1, z1, x2, z2) {
+  clearA.set(x1, 1.5, z1);
+  clearB.set(x2, 1.5, z2);
+  return !occluded(clearA, clearB);
+}
+
 // Route-graph read access for the scripted shot player (same graph, same hop table).
-export { NODES, NEXT_HOP, nearestNode };
+export { NODES, NEXT_HOP, ADJACENT, nearestNode };

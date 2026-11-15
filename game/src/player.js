@@ -4,6 +4,7 @@
 // is tunnelled at the 60 Hz step. All state lives in state.js. No jump: this is tactical.
 import * as THREE from 'three';
 import { state } from './state.js';
+import { footstep } from './audio.js';
 
 const RADIUS = 0.35;
 const STAND_HEIGHT = 1.8;
@@ -18,6 +19,8 @@ const FRICTION = 9;
 const GRAVITY = 20;
 const STEP_HEIGHT = 0.45; // walkable ledge: the 0.4 m courtyard steps, nothing taller
 const MAX_FALL = 30;
+
+let stride = 1.4; // distance accumulator for the footstep timer
 
 export function createPlayer(colliders, shootables) {
   const player = state.player;
@@ -151,6 +154,18 @@ export function createPlayer(colliders, shootables) {
       player.position.y = 0;
       player.velocity.y = 0;
       player.onGround = true;
+    }
+
+    // Footsteps: distance-driven while moving on the ground (stride ~2.2 m), silent in air.
+    const groundSpeed = Math.hypot(player.velocity.x, player.velocity.z);
+    if (player.onGround && groundSpeed > 1.5) {
+      stride += groundSpeed * dt;
+      if (stride >= 2.2) {
+        stride = 0;
+        footstep();
+      }
+    } else {
+      stride = 1.4; // resume mid-stride so the first step after stopping lands quickly
     }
   }
 

@@ -4,6 +4,7 @@
 import { state } from './state.js';
 import { WEAPONS } from './weapons.js';
 import { applyTeams } from './bots.js';
+import { sting } from './audio.js';
 
 const ROUND_TIME = 60;
 const FREEZE_TIME = 5;
@@ -57,6 +58,9 @@ function startRound() {
   // magazines; a player on the losing side who died is reset to the pistol and loses
   // their grenades.
   if (state.economy?.kevlarRound !== state.round.number) state.player.kevlar = false;
+  // Starting kit: the carrier always runs armored (kevlar halves body damage, head hits
+  // ignore it) — pressure stays honest, the route just isn't a one-burst death sentence.
+  state.player.kevlar = true;
   const resetToPistol = state.round.lastWinner != null
     && state.round.lastWinner !== state.round.playerTeam && !state.round.playerSurvived;
   for (let i = 0; i < WEAPONS.length; i += 1) {
@@ -70,12 +74,10 @@ function startRound() {
     state.weapon.slot = 2;
   }
   state.round.bomb.state = 'carried';
-  // The bomb belongs to the ATTACKER TEAM, not to the player: it starts with the first
-  // living attacker bot so the objective advances even when the player never moves. The
-  // player takes it only by picking it up after a drop (updatePickup gives them priority)
-  // and can still plant with E while carrying.
-  const firstAttacker = state.bots.find((bot) => bot.team === 0 && bot.alive);
-  state.round.bomb.carrier = firstAttacker ? firstAttacker.slot : 'player';
+  // The bomb starts with the PLAYER: the attacker side routes straight to the nearest site
+  // and plants (shot mode), so the objective never stalls while a bot wanders. A dropped
+  // bomb is picked up per the normal rules below.
+  state.round.bomb.carrier = 'player';
   state.round.bomb.site = null;
   state.round.bomb.progress = 0;
   deps_.hud.setBanner('');
@@ -232,10 +234,12 @@ function endRound(winner, banner) {
   state.round.timer = ROUND_END_TIME;
   state.round.score[winner] += 1;
   state.round.banner = banner;
+  (window.__roundLog ??= []).push(`R${state.round.number}: ${banner} (${state.round.score[0]}-${state.round.score[1]}) playerAlive=${state.player.alive} bomb=${state.round.bomb.state}`);
   state.round.lastWinner = winner;
   state.round.playerSurvived = state.player.alive;
   deps_.hud.setBanner(banner);
   deps_.hud.setRound(state.round.number, state.round.score);
+  sting(winner === state.round.playerTeam);
   deps_.onRoundEnd?.(winner);
 }
 
@@ -296,6 +300,7 @@ function plantNow(site, x, y, z) {
   bomb.timer = BOMB_TIME;
   bomb.progress = 0;
   state.round.phase = 'planted';
+  (window.__roundLog ??= []).push(`  planted ${site.name} at (${x.toFixed(1)}, ${z.toFixed(1)}) carrier=${typeof bomb.carrier === 'number' ? 'bot' + bomb.carrier : bomb.carrier}`);
   state.round.timer = BOMB_TIME; // round clock is now the bomb clock
   deps_.hud.setProgress(-1, '');
   deps_.hud.setBanner('Bomb planted');
