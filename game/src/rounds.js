@@ -3,6 +3,7 @@
 // The objective (plant/defuse) lives here too; the economy is economy.js.
 import { state } from './state.js';
 import { WEAPONS } from './weapons.js';
+import { applyTeams } from './bots.js';
 
 const ROUND_TIME = 60;
 const FREEZE_TIME = 5;
@@ -36,19 +37,26 @@ export function initRounds(deps) {
 
 let deps_ = null;
 
-// Full reset for one round: players and bots back to their spawns, health full, bomb with
-// the player (the player team always attacks).
+// Full reset for one round: sides swap at the half (rounds 1-5 the player attacks, 6+ the
+// player defends), everyone is back at their side's spawns with full health, and the bomb
+// starts with an attacker.
 function startRound() {
   state.round.number += 1;
   state.round.phase = 'freeze';
   state.round.timer = FREEZE_TIME;
+  const playerTeam = state.round.number <= 5 ? 0 : 1;
+  state.player.team = playerTeam;
+  state.round.playerTeam = playerTeam;
+  applyTeams(playerTeam);
   const spawns = deps_.world.spawns;
-  deps_.respawnPlayer(spawns.attackers[0].position);
+  deps_.respawnPlayer(playerTeam === 0 ? spawns.attackers[0].position : spawns.defenders[0].position);
   deps_.respawnBots();
   // Loadout carry-over: kevlar cleared unless bought this round; ammo refilled to full
-  // magazines; a loser who died is reset to the pistol and loses their grenades.
+  // magazines; a player on the losing side who died is reset to the pistol and loses
+  // their grenades.
   if (state.economy?.kevlarRound !== state.round.number) state.player.kevlar = false;
-  const resetToPistol = state.round.lastWinner === 1 && !state.round.playerSurvived;
+  const resetToPistol = state.round.lastWinner != null
+    && state.round.lastWinner !== state.round.playerTeam && !state.round.playerSurvived;
   for (let i = 0; i < WEAPONS.length; i += 1) {
     const slot = state.weapon.slots[i];
     if (resetToPistol && i < 2) { slot.mag = 0; slot.reserve = 0; continue; }
@@ -60,7 +68,8 @@ function startRound() {
     state.weapon.slot = 2;
   }
   state.round.bomb.state = 'carried';
-  state.round.bomb.carrier = 'player';
+  // The bomb starts with an attacker: the player in their half, else the first attacker bot.
+  state.round.bomb.carrier = playerTeam === 0 ? 'player' : 2;
   state.round.bomb.site = null;
   state.round.bomb.progress = 0;
   deps_.hud.setBanner('');
@@ -147,7 +156,7 @@ function carrierBot() {
 function updatePickup() {
   const bomb = state.round.bomb;
   const near = (pos) => Math.hypot(pos.x - bomb.x, pos.z - bomb.z) <= PICKUP_RANGE;
-  if (state.player.alive && near(state.player.position)) {
+  if (state.player.team === 0 && state.player.alive && near(state.player.position)) {
     bomb.state = 'carried';
     bomb.carrier = 'player';
   } else {
@@ -161,9 +170,9 @@ function updatePickup() {
   if (bomb.state === 'carried') deps_.hud.setBanner('');
 }
 
-// Defuse: a defender (bot or, were the player one, the player) within 4 m of the bomb holds
-// the objective for 7 s. Bots defuse automatically when close; progress resets when they
-// step away or die.
+// Defuse: a defender (bot or the player) within 4 m of the bomb holds the objective for 7 s.
+// Bots defuse automatically when close; the player holds E. Progress resets when they step
+// away or die. Live for the player in the second half, when the player defends.
 function updateDefuse(dt) {
   const bomb = state.round.bomb;
   let working = false;
@@ -191,17 +200,18 @@ function updateDefuse(dt) {
   }
 }
 
-// Teams are 0 = attackers (player team), 1 = defenders. Elimination of one side decides the
-// round, except when the bomb is down — then only defuse or detonation can end it.
+// Teams are 0 = attackers, 1 = defenders; the player counts on their round's team (sides
+// swap at the half). Elimination of one side decides the round, except when the bomb is
+// down — then only defuse or detonation can end it.
 function checkElimination() {
-  const attackersDown = state.player.alive === false && aliveBots(0) === 0;
-  const defendersDown = aliveBots(1) === 0;
+  const attackersLeft = aliveBots(0) + (state.player.team === 0 && state.player.alive ? 1 : 0);
+  const defendersLeft = aliveBots(1) + (state.player.team === 1 && state.player.alive ? 1 : 0);
   if (state.round.bomb.state === 'planted') {
-    if (defendersDown) endRound(0, 'Defenders eliminated — attackers win');
+    if (defendersLeft === 0) endRound(0, 'Defenders eliminated — attackers win');
     return;
   }
-  if (attackersDown) endRound(1, 'Attackers eliminated — defenders win');
-  else if (defendersDown) endRound(0, 'Defenders eliminated — attackers win');
+  if (attackersLeft === 0) endRound(1, 'Attackers eliminated — defenders win');
+  else if (defendersLeft === 0) endRound(0, 'Defenders eliminated — attackers win');
 }
 
 function aliveBots(team) {

@@ -101,13 +101,16 @@ export function createWeapons(camera, scene, opts) {
   part(pistol, new THREE.CylinderGeometry(0.011, 0.011, 0.05, 8), amber, 0, 0.03, -0.2, Math.PI / 2);
 
   const models = [rifle, smg, pistol];
+  // Viewmodel scale: smaller and pushed right-down so the weapon never covers a target.
+  const VM_SCALE = 0.7;
   const basePos = [
-    new THREE.Vector3(0.24, -0.2, -0.42),
-    new THREE.Vector3(0.22, -0.19, -0.36),
-    new THREE.Vector3(0.2, -0.22, -0.34),
+    new THREE.Vector3(0.30, -0.27, -0.42),
+    new THREE.Vector3(0.28, -0.26, -0.36),
+    new THREE.Vector3(0.26, -0.29, -0.34),
   ];
   for (let i = 0; i < models.length; i += 1) {
     models[i].position.copy(basePos[i]);
+    models[i].scale.setScalar(VM_SCALE);
     models[i].visible = i === weapon.slot;
     camera.add(models[i]);
   }
@@ -215,12 +218,12 @@ export function createWeapons(camera, scene, opts) {
     if (hit) endPoint.copy(hit.point);
     else endPoint.copy(origin).addScaledVector(direction, RANGE);
 
-    muzzlePoint.set(rec.muzzle[0], rec.muzzle[1], rec.muzzle[2]);
+    muzzlePoint.set(rec.muzzle[0] * VM_SCALE, rec.muzzle[1] * VM_SCALE, rec.muzzle[2] * VM_SCALE);
     camera.localToWorld(muzzlePoint);
     spawnTracer(muzzlePoint, endPoint);
     if (hit) {
       spawnPuff(hit.point, 5, 1.6);
-      if (hit.object.userData.target) {
+      if (hit.object.userData.bot) {
         const head = hit.object.userData.part === 'head';
         applyDamage(hit.object, head ? 'head' : 'body', head ? rec.damageHead : rec.damageBody);
       }
@@ -272,7 +275,7 @@ export function createWeapons(camera, scene, opts) {
     }
 
     flash.visible = weapon.flash > 0;
-    flash.position.set(rec.muzzle[0], rec.muzzle[1], rec.muzzle[2]);
+    flash.position.set(rec.muzzle[0] * VM_SCALE, rec.muzzle[1] * VM_SCALE, rec.muzzle[2] * VM_SCALE);
     flash.rotation.z = weapon.flash * 30;
     const flashScale = 0.7 + (weapon.flash / FLASH_TIME) * 0.5;
     flash.scale.set(flashScale, flashScale, 1);

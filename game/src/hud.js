@@ -70,6 +70,28 @@ export function createHud() {
   const progressFill = document.createElement('div');
   progressFill.style.cssText = 'height:100%;width:0%;background:#e9a23b;';
   progress.appendChild(progressFill);
+  // Health, bottom-left above the score line: one bar + number, plus a kevlar tag that
+  // only exists once armour is bought.
+  const healthWrap = document.createElement('div');
+  healthWrap.id = 'health';
+  healthWrap.style.cssText = 'position:absolute;left:32px;bottom:92px;'
+    + 'display:flex;align-items:center;gap:8px;font:13px/1 monospace;color:#98a0a8;';
+  const healthBar = document.createElement('div');
+  healthBar.id = 'health-bar';
+  healthBar.style.cssText = 'width:140px;height:6px;background:#2c323a;border-radius:2px;overflow:hidden;';
+  const healthFill = document.createElement('div');
+  healthFill.id = 'health-fill';
+  healthFill.style.cssText = 'height:100%;width:100%;background:#e9e6df;';
+  healthBar.appendChild(healthFill);
+  const healthValue = document.createElement('span');
+  healthValue.id = 'health-value';
+  healthValue.style.cssText = 'color:#e9e6df;font-size:16px;';
+  healthValue.textContent = '100';
+  const armorTag = document.createElement('span');
+  armorTag.id = 'armor-tag';
+  armorTag.hidden = true;
+  armorTag.textContent = 'kevlar';
+  healthWrap.append(healthBar, healthValue, armorTag);
   const dead = document.createElement('div');
   dead.id = 'death-line';
   dead.hidden = true;
@@ -77,12 +99,14 @@ export function createHud() {
     + 'color:#f55;font:bold 26px monospace;text-shadow:0 1px 3px #000;';
   dead.textContent = 'YOU DIED — waiting for round end';
   const hudRoot = document.getElementById('hud');
-  hudRoot.append(roundHud, banner, progress, dead);
+  hudRoot.append(roundHud, banner, progress, dead, healthWrap);
   let lastTimer = -1;
   let lastRoundScore = '';
   let lastMoney = -1;
   let lastProgress = -2;
   let lastLabel = '';
+  let lastHealth = -1;
+  let lastArmor = null;
 
   return {
     setWeapon(name) {
@@ -204,8 +228,26 @@ export function createHud() {
     setSpectate(show) {
       dead.hidden = !show;
     },
+    // Health 0..100 with the armour flag; DOM moves in whole-point steps, colour drops to
+    // the danger tone under 30, and the kevlar tag appears only once armour is bought.
+    setHealth(health, kevlar) {
+      const hp = Math.max(0, Math.min(100, Math.round(health)));
+      if (hp !== lastHealth) {
+        lastHealth = hp;
+        healthValue.textContent = String(hp);
+        healthFill.style.width = `${hp}%`;
+        healthFill.style.background = hp < 30 ? '#e0503c' : '#e9e6df';
+      }
+      if (kevlar !== lastArmor) {
+        lastArmor = kevlar;
+        armorTag.hidden = !kevlar;
+      }
+    },
     showMatchEnd(score) {
       this.showOverlay('end', score[0]);
+      // Result in the headline and the real line in the copy: player team is score[0].
+      title.textContent = score[0] > score[1] ? 'VICTORY' : 'DEFEAT';
+      copy.textContent = `Final score ${score[0]} - ${score[1]}.`;
       banner.hidden = true;
     },
   };

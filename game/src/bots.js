@@ -90,18 +90,21 @@ const geometry = {};
 
 function makeBody(scene, team) {
   // Capsule torso + head sphere, both tagged parts so weapons.js's hitscan route
-  // (userData.target / userData.part) applies damage directly. Team tint on the head.
+  // (userData.bot / userData.part) applies damage directly. Team tint on the head,
+  // re-colourable because sides swap at the half.
   const group = new THREE.Group();
   const tint = team === TEAM.PLAYER ? 0x7aa35a : 0xa34a3a;
   const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2a2a30, roughness: 0.6 });
   const headMat = new THREE.MeshStandardMaterial({ color: tint, roughness: 0.45 });
   const torso = new THREE.Mesh(geometry.torso, bodyMat);
   torso.position.y = 1.0;
+  torso.castShadow = true;
   const head = new THREE.Mesh(geometry.head, headMat);
   head.position.y = 1.53;
+  head.castShadow = true;
   group.add(torso, head);
   scene.add(group);
-  return { group, torso, head };
+  return { group, torso, head, headMat };
 }
 
 let sceneRef = null;
@@ -117,8 +120,30 @@ export function initBots(scene, world, fire) {
   buildRoutes();
 }
 
-// 2 friendlies from attacker spawns, 3 enemies from defender spawns. Each bot walks its
-// team's patrol loop; world.spawn positions carry y=0.
+// Sides swap at the half: the first two bots stay with the player, the other three take the
+// opposing side. Re-tags team, tint, name and patrol route to match.
+export function applyTeams(playerTeam) {
+  let friendly = 0;
+  let enemy = 0;
+  for (let i = 0; i < state.bots.length; i += 1) {
+    const bot = state.bots[i];
+    bot.team = i < 2 ? playerTeam : 1 - playerTeam;
+    bot.body.headMat.color.set(bot.team === 0 ? 0x7aa35a : 0xa34a3a);
+    if (bot.team === playerTeam) {
+      friendly += 1;
+      bot.name = `Friendly ${friendly}`;
+    } else {
+      enemy += 1;
+      bot.name = `Enemy ${enemy}`;
+    }
+    bot.patrol = PATROLS[bot.team][i % PATROLS[bot.team].length];
+    bot.patrolAt = 0;
+  }
+}
+
+// Spawn all five bots: the two friendly ones and the three opposing ones, each walking its
+// team's patrol loop; world.spawn positions carry y=0. Initial teams: player side attacks
+// in the first half (rounds.js re-tags via applyTeams when the sides swap).
 export function spawnBots(scene) {
   state.bots.length = 0;
   const spawn = (team, index) => {
@@ -186,21 +211,33 @@ function playerPoint(out) {
   return out.set(state.player.position.x, state.player.position.y + 1.5, state.player.position.z);
 }
 
+// Reusable candidate slots: acquireTarget runs 5x per tick, so nothing allocates here.
+const candidatePoints = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+const candidates = new Array(6);
+candidates[0] = { point: null, isPlayer: true, pos: null };
+
 // Nearest visible opposing target (player or bot) for this bot; null when none.
 function acquireTarget(bot) {
   let best = null;
   let bestDist = Infinity;
   temps.b.set(bot.position.x, 1.5, bot.position.z); // bot eye
-  const candidates = [];
-  playerPoint(temps.a);
-  candidates.push({ point: temps.a, isPlayer: true, pos: state.player.position });
+  let count = 0;
+  candidates[0].point = playerPoint(candidatePoints[0]);
+  candidates[0].pos = state.player.position;
+  count = 1;
   for (const other of state.bots) {
     if (other === bot || !other.alive || other.team === bot.team) continue;
-    candidates.push({ point: other.position, isPlayer: false, pos: other.position, bot: other });
+    const slot = candidates[count] ?? (candidates[count] = { point: null, isPlayer: false, pos: null, bot: null });
+    slot.point = other.position;
+    slot.pos = other.position;
+    slot.bot = other;
+    count += 1;
   }
-  for (const candidate of candidates) {
-    const dx = candidate.pos.x - bot.position.x;
-    const dz = candidate.pos.z - bot.position.z;
+  for (let index = 0; index < count; index += 1) {
+    const candidate = candidates[index];
+    const pos = candidate.pos;
+    const dx = pos.x - bot.position.x;
+    const dz = pos.z - bot.position.z;
     const dist = Math.hypot(dx, dz);
     if (dist > VISION_RANGE) continue;
     // Cone check against the bot's facing yaw (70 degrees full angle).
@@ -426,9 +463,11 @@ export function damageBot(bot, dmg, part, byPlayer) {
   return true;
 }
 
-// Full reset for the future rounds module: health, mode, route position, spawn spots.
+// Full reset: health, mode, route position, spawn spots. Positions follow the CURRENT team
+// tags (sides swap at the half), team 0 takes attacker spawns, team 1 defender spawns.
 export function respawnBots() {
   const spawns = worldRef ? worldRef.spawns : null;
+  const taken = { 0: 0, 1: 0 };
   for (const bot of state.bots) {
     bot.alive = true;
     bot.health = HEALTH;
@@ -444,7 +483,8 @@ export function respawnBots() {
     bot.goalRange = 0;
     if (!spawns) continue;
     const list = bot.team === TEAM.PLAYER ? spawns.attackers : spawns.defenders;
-    bot.position.copy(list[(bot.index + (bot.team === TEAM.PLAYER ? 1 : 0)) % list.length].position);
+    bot.position.copy(list[taken[bot.team] % list.length].position);
+    taken[bot.team] += 1;
   }
 }
 

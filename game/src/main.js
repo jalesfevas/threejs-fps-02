@@ -41,7 +41,8 @@ const random = mulberry32(seed);
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = false;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.getElementById('game').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -242,6 +243,7 @@ function frame(now) {
     hud.setCrosshair(Math.max(3, weapons.currentSpread() / halfFovTan * window.innerHeight / 2));
     hud.setRoundTimer(state.round.timer);
     hud.setMoney(state.economy.money);
+    hud.setHealth(state.player.health, state.player.kevlar);
     hud.setSpectate(!body.alive && state.round.phase !== 'match_end');
   }
   renderer.render(scene, camera);
@@ -251,36 +253,79 @@ function settle(steps) {
   for (let index = 0; index < steps; index += 1) step(SIM_DT);
 }
 
+// Shot captures are frozen frames, so the frame loop never fills the round HUD. Push a
+// plausible mid-match state by hand before the capture paints — deterministic constants,
+// no clocks, no randomness.
+function pushShotHud(round, score, timer, money) {
+  state.round.number = round;
+  state.round.score = [...score];
+  state.round.timer = timer;
+  state.economy.money = money;
+  hud.setRound(round, state.round.score);
+  hud.setRoundTimer(timer);
+  hud.setMoney(money);
+  hud.setHealth(state.player.health, state.player.kevlar);
+}
+
+// The shot targets: living enemies of the player, nearest first, resolved once at setup so
+// the capture stays deterministic. pointOf re-reads the live position each shot.
+function shotTargets() {
+  const px = body.position.x;
+  const pz = body.position.z;
+  return state.bots
+    .filter((bot) => bot.team === 1 && bot.alive)
+    .sort((a, b) => (
+      Math.hypot(a.position.x - px, a.position.z - pz)
+      - Math.hypot(b.position.x - px, b.position.z - pz)
+    ));
+}
+
 function runShot(name) {
   hud.hideOverlay();
   body.pitch = 0;
   body.yaw = 0;
   if (name === 'play' || name === 'end') {
     body.position.set(0, 0, -5);
-    settle(20);
-    const aimPoints = state.bots.map((bot) => new THREE.Vector3(bot.position.x, bot.position.y + 1.53, bot.position.z));
-    const count = name === 'play' ? 1 : aimPoints.length;
-    for (let index = 0; index < count; index += 1) {
-      const point = aimPoints[index % aimPoints.length];
+    settle(12);
+    const targets = shotTargets();
+    const pointOf = (bot) => ({ x: bot.position.x, y: bot.position.y + 1.53, z: bot.position.z });
+    if (name === 'play') {
+      // One burst at the nearest enemy: tracked live while it lives, corpse afterwards.
+      const target = targets[0] ?? null;
       for (let round = 0; round < 3; round += 1) {
-        aimAt(point);
+        aimAt(target ? pointOf(target) : { x: 0, y: 1.5, z: -6 });
         weapons.tryFire(0);
         if (round < 2) settle(8);
       }
-    }
-    if (name === 'play') {
       settle(12);
-      aimAt(aimPoints[1 % aimPoints.length]);
+      aimAt(target ? pointOf(target) : { x: 0, y: 1.5, z: -6 });
       weapons.tryFire(0);
       settle(1);
     } else {
-      settle(40);
+      // Three rounds per target, dropping a target the moment it falls.
+      for (const target of targets) {
+        for (let round = 0; round < 3 && target.alive; round += 1) {
+          aimAt(pointOf(target));
+          weapons.tryFire(0);
+          settle(8);
+        }
+      }
+      settle(12);
     }
   } else {
     body.position.set(0.6, 0, 8.6);
     settle(20);
     aimAt(new THREE.Vector3(0, 1.5, -6));
     hud.showOverlay('start', 0);
+    pushShotHud(1, [0, 0], 5, 800); // freeze-time of round 1
+  }
+  if (name === 'play') {
+    pushShotHud(3, [2, 1], 47, 3400); // mid round 3
+  } else if (name === 'end') {
+    // Full time: 3 - 2 after five rounds, match-over overlay with the result headline.
+    pushShotHud(5, [3, 2], 0, 6650);
+    state.round.phase = 'match_end';
+    hud.showMatchEnd(state.round.score);
   }
   hud.setScore(state.score);
   hud.setAmmo(weapons.activeSlot().mag, weapons.activeSlot().reserve);
